@@ -108,6 +108,20 @@ public class Runner extends AbstractTestNGCucumberTests {
 		return fallback.toArray(new Object[0][]);
 	}
 
+	// cucumber.filter.tags in config.properties is applied only when -Dcucumber.filter.tags is not already set.
+	private static void applyCucumberTagFilterFromConfig() {
+		String existing = System.getProperty("cucumber.filter.tags");
+		if (existing != null && !existing.trim().isEmpty()) {
+			LOGGER.info("Using cucumber.filter.tags from system property: " + existing);
+			return;
+		}
+		String tags = EsignetConfigManager.getproperty("cucumber.filter.tags");
+		if (tags != null && !tags.trim().isEmpty()) {
+			System.setProperty("cucumber.filter.tags", tags.trim());
+			LOGGER.info("Using cucumber.filter.tags from config.properties: " + tags.trim());
+		}
+	}
+
 	// featureFilesToExecute (config.properties) is a comma-separated list of feature file names
 	// (without .feature extension); empty/unset means run every discovered scenario.
 	private static Object[][] filterByFeatureFiles(Object[][] scenarios) {
@@ -169,6 +183,7 @@ public class Runner extends AbstractTestNGCucumberTests {
 
 	public static void main(String[] args) {
 		OTPListener otpListener = new OTPListener();
+		boolean setupFailed = false;
 		try {
 			LOGGER.info("** ------------- Esignet UI Automation run started---------------------------- **");
 
@@ -182,6 +197,7 @@ public class Runner extends AbstractTestNGCucumberTests {
 
 			AdminTestUtil.init();
 			EsignetConfigManager.init();
+			applyCucumberTagFilterFromConfig();
 			EsignetUtil.seedPreconfiguredIdsFromConfig();
 			EsignetUtil.getPluginName();
 			suiteSetup(getRunType());
@@ -245,14 +261,19 @@ public class Runner extends AbstractTestNGCucumberTests {
 
 		} catch (Exception e) {
 			LOGGER.severe("Exception " + e.getMessage());
+			setupFailed = true;
+		} finally {
+			otpListener.bTerminate = true;
+			try {
+				if (EsignetUtil.getPluginName().equals("mosipid")) {
+					KeycloakUserManager.removeUser();
+				}
+			} catch (Exception cleanupEx) {
+				LOGGER.severe("Keycloak teardown failed: " + cleanupEx.getMessage());
+			}
 		}
-		otpListener.bTerminate = true;
 
-		if (EsignetUtil.getPluginName().equals("mosipid")) {
-			KeycloakUserManager.removeUser();
-		}
-
-		System.exit(0);
+		System.exit(setupFailed ? 1 : 0);
 	}
 
 	public static void suiteSetup(String runType) {
@@ -374,12 +395,12 @@ public class Runner extends AbstractTestNGCucumberTests {
 	}
 
 	public static void updateFeaturesPath() {
-		File homeDir = null;
 		String os = System.getProperty("os.name").toLowerCase();
+		String projectDir = System.getProperty("user.dir");
 		if (os.contains("windows")) {
-			System.setProperty("cucumber.features", "src\\test\\resources\\featurefiles\\");
+			System.setProperty("cucumber.features", projectDir + "\\src\\main\\resources\\featurefiles");
 		} else {
-			System.setProperty("cucumber.features", "/home/mosip/featurefiles/");
+			System.setProperty("cucumber.features", projectDir + "/src/main/resources/featurefiles");
 		}
 	}
 	

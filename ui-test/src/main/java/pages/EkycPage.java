@@ -129,7 +129,12 @@ public class EkycPage extends BasePage {
 	public boolean isEkycProcessStepsScreenLabelDisplayed() {
 		// The attention-page-to-eKYC-screen transition can take longer than the default explicit
 		// wait timeout under backend load, so this waits longer before the usual visibility check.
-		new WebDriverWait(driver, Duration.ofSeconds(30)).until(ExpectedConditions.visibilityOf(ekycProcessStepsScreenLabel));
+		try {
+			new WebDriverWait(driver, Duration.ofSeconds(utils.EsignetConfigManager.getTimeout()))
+					.until(ExpectedConditions.visibilityOf(ekycProcessStepsScreenLabel));
+		} catch (org.openqa.selenium.TimeoutException e) {
+			return false;
+		}
 		return isElementVisible(ekycProcessStepsScreenLabel, "Verified eKyc screen is displayed");
 	}
 
@@ -314,9 +319,9 @@ public class EkycPage extends BasePage {
 	}
 
 	public boolean isTermsAndConditionCheckboxNotSelected() {
-		waitForElementVisible(ekycTermsAndConditionsCheckbox);
-		return !ekycTermsAndConditionsCheckbox.isSelected() && isElementVisible(ekycTermsAndConditionsCheckbox,
-				"Verified terms and conditions checkbox is not selected by default");
+		return isElementVisible(ekycTermsAndConditionsCheckbox,
+				"Verified terms and conditions checkbox is not selected by default")
+				&& !ekycTermsAndConditionsCheckbox.isSelected();
 	}
 
 	public void clickOnTermsAndConditionCheckBox() {

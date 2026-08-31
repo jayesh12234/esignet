@@ -17,7 +17,11 @@ import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.WebElement;
 import org.openqa.selenium.support.FindBy;
 import org.openqa.selenium.support.ui.ExpectedConditions;
+import org.openqa.selenium.support.ui.Select;
 import org.openqa.selenium.support.ui.WebDriverWait;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import utils.EsignetConfigManager;
 import utils.LinkAuthUtil;
@@ -29,11 +33,16 @@ public class LoginOptionsPage extends BasePage {
 	private static final Set<String> NON_WALLET_LOGIN_IDS = Set.of(
 			"login_with_otp", "login_with_bio", "login_with_pwd", "login_with_pin", "login_with_kbi");
 
+	private static final Logger LOGGER = LoggerFactory.getLogger(LoginOptionsPage.class);
+
 	public LoginOptionsPage(WebDriver driver) {
 		super(driver);
 	}
 
-	@FindBy(id = "signup-url-button")
+	// Verified live (matches ConsentPage.loginTitle): the login-screen title renders as h3#text_heading.
+	// "signup-url-button" doesn't exist on this deployment - there's no signup service, and this was
+	// never actually a button, just a dead id historically used to read the page's title text.
+	@FindBy(id = "text_heading")
 	WebElement loginButton;
 
 	@FindBy(xpath = "//img[@class='brand-logo']")
@@ -42,22 +51,31 @@ public class LoginOptionsPage extends BasePage {
 	@FindBy(id = "login_with_walletname")
 	WebElement loginWithInji;
 
-	@FindBy(id = "language_selection")
+	// The language switcher has no id at all - only aria-haspopup="listbox" inside the nav bar.
+	// Verified by opening the live dropdown; it defaults to Arabic when the authorize URL carries no
+	// ui_locales, and its options render as role="option" buttons (not role="menuitem" divs).
+	@FindBy(css = "nav button[aria-haspopup='listbox']")
 	WebElement languageDropdown;
 
-	@FindBy(id = "hi1")
+	@FindBy(xpath = "//button[@role='option' and normalize-space()='हिन्दी']")
 	WebElement hindiLanguage;
 
-	@FindBy(id = "login_with_otp")
+	// Rewritten against the current "ThunderID" component library used by esignet-go (esqa) - the
+	// classic eSignet UI's login_with_* ids no longer exist. Verified by rendering the live login
+	// page in a real browser (2026-08-19): the auth-method-selection screen renders acr_otp/
+	// acr_password/acr_bio buttons; login_with_pin/login_with_kbi/login_with_walletname weren't
+	// observed on that render (client had no PIN/KBI/wallet auth factors registered) and are left
+	// as-is pending verification against a client that does.
+	@FindBy(id = "acr_otp")
 	WebElement loginWithOtpBtn;
 
-	@FindBy(id = "login_with_bio")
+	@FindBy(id = "acr_bio")
 	WebElement loginWithBiometricBtn;
 
 	@FindBy(id = "login_with_walletname")
 	WebElement loginWithInjiBtn;
 
-	@FindBy(id = "login_with_pwd")
+	@FindBy(id = "acr_password")
 	WebElement loginWithPasswordBtn;
 
 	@FindBy(id = "login_with_pin")
@@ -69,16 +87,18 @@ public class LoginOptionsPage extends BasePage {
 	@FindBy(id = "show-more-options")
 	List<WebElement> moreWaysToSignIn;
 
-	@FindBy(id = "mobile")
+	// Same ThunderID rewrite as above, verified by rendering the live ID-type/OTP-request screen.
+	@FindBy(id = "login_id_mobile")
 	WebElement mobileNumberOption;
 
-	@FindBy(id = "nrc")
+	@FindBy(id = "login_id_nrc")
 	WebElement nrcIdOption;
 
-	@FindBy(id = "vid")
+	// "vid" is now a combined UIN/VID button/field - login_id_uin.
+	@FindBy(id = "login_id_uin")
 	WebElement vidOption;
 
-	@FindBy(id = "email")
+	@FindBy(id = "login_id_email")
 	WebElement emailOption;
 
 	@FindBy(id = "back-button")
@@ -93,25 +113,33 @@ public class LoginOptionsPage extends BasePage {
 	@FindBy(xpath = "//div[contains(@class,'font-semibold') and contains(@class,'mx-2')]")
 	WebElement selectPreferredIdHeader;
 
-	@FindBy(id = "get_otp")
+	@FindBy(id = "submit_uin")
 	WebElement getOtpButton;
 
-	@FindBy(xpath = "//button[@id='mobile' and contains(@class,'selected_login_id')]")
+	@FindBy(xpath = "//button[@id='login_id_mobile' and contains(@class,'login-id-button--active')]")
 	WebElement mobileSelected;
 
-	@FindBy(id = "Otp_login_dropdown_button")
+	// Verified live: this is a plain native HTML <select> (no id), not a custom JS dropdown with
+	// separately clickable/id'd options - "Otp_login_dropdown_button"/"KHM"/"IND" never existed on
+	// this deployment. Its two <option>s carry the country calling codes as their value attribute:
+	// value="+91" (India) and value="+855" (Cambodia/KHM) - confirmed via live DOM capture of the
+	// mobile-number entry screen. Interact with it via Selenium's Select wrapper, not clickOnElement.
+	@FindBy(css = "select.thunderid-affixed-field__prefix-select")
 	WebElement prefixNumberField;
 
-	@FindBy(id = "KHM")
-	WebElement khmCountryCode;
+	// OTP entry is now 6 separate single-digit boxes (no shared id), not one field - verified by
+	// rendering the live OTP screen. Each is aria-labelled "... digit N"; the container carries this
+	// class regardless of language.
+	@FindBy(css = "input.thunderid-otp-field__input")
+	List<WebElement> otpInputFields;
 
-	@FindBy(id = "IND")
-	WebElement indCountryCode;
+	@FindBy(id = "action_submit_otp")
+	WebElement submitOtpButton;
 
-	@FindBy(id = "otp_verify_input")
-	WebElement otpInputField;
-
-	@FindBy(xpath = "//div[contains(@class,'header my-2')]")
+	// Verified live (matches ConsentPage's own attention/consent screen check): the single merged
+	// attention/consent screen's real, only interactive element is id="action_allow" - not
+	// div.header.my-2, which doesn't exist here.
+	@FindBy(id = "action_allow")
 	WebElement attentionScreen;
 
 	@FindBy(id = "cancel-button")
@@ -120,14 +148,13 @@ public class LoginOptionsPage extends BasePage {
 	@FindBy(id = "discontinue-button")
 	WebElement attentionDiscontinueButton;
 
-	@FindBy(id = "Otp_vid")
-	WebElement vidField;
+	// The ID-type buttons (login_id_uin/login_id_mobile/login_id_email/login_id_nrc) now share a
+	// single input field regardless of which type is selected, instead of one field per type.
+	@FindBy(id = "username_input")
+	WebElement idInputField;
 
 	@FindBy(id = "error-banner-message")
 	WebElement invalidIndividualIdErrorMessage;
-
-	@FindBy(id = "Otp_email")
-	WebElement emailField;
 
 	@FindBy(id = "sbi_vid")
 	WebElement biometricVidField;
@@ -294,6 +321,90 @@ public class LoginOptionsPage extends BasePage {
 		return qrCode.getAttribute("src");
 	}
 
+	public String clickWalletQrCodeAndCaptureDeepLink() {
+		JavascriptExecutor js = (JavascriptExecutor) driver;
+		js.executeScript(
+				"window.__capturedDeepLink = null;"
+						+ "if (!window.__originalWindowOpen) { window.__originalWindowOpen = window.open; }"
+						+ "window.open = function(url) { window.__capturedDeepLink = url; return null; };");
+		String originalWindow = driver.getWindowHandle();
+		WebElement qrButton = waitForElementVisible(By.id("wallet-qr-btn"));
+		clickOnElement(qrButton, "Clicked wallet QR code to capture deep link");
+		String deepLink = (String) js.executeScript(
+				"window.open = window.__originalWindowOpen; return window.__capturedDeepLink;");
+		closeExtraBrowserWindows(originalWindow);
+		return deepLink;
+	}
+
+	private void closeExtraBrowserWindows(String originalWindow) {
+		Set<String> handles = driver.getWindowHandles();
+		for (String handle : handles) {
+			if (!handle.equals(originalWindow)) {
+				driver.switchTo().window(handle);
+				driver.close();
+			}
+		}
+		driver.switchTo().window(originalWindow);
+	}
+
+	public boolean waitForWalletAuthenticateProgressDisplayed() {
+		int waitSeconds = Math.max(30, LinkAuthUtil.getMaxUiWaitSeconds());
+		WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(waitSeconds));
+		try {
+			wait.until(webDriver -> isWalletAuthenticateProgressDisplayed()
+					|| (!isWalletQrCodeDisplayed() && hasWalletLinkedSessionIndicators())
+					|| (!isWalletQrCodeDisplayed() && isWalletLinkSessionActive()));
+			return isWalletAuthenticateProgressDisplayed() || hasWalletLinkedSessionIndicators()
+					|| (!isWalletQrCodeDisplayed() && isWalletLinkSessionActive());
+		} catch (TimeoutException e) {
+			return false;
+		}
+	}
+
+	public void waitForWalletSessionAfterLinkScan() {
+		waitForWalletAuthenticateProgressDisplayed();
+	}
+
+	private boolean isWalletLinkSessionActive() {
+		return !isWalletQrCodeDisplayed() && !isWalletQrExpiredMessageVisible();
+	}
+
+	private boolean hasWalletLinkedSessionIndicators() {
+		if (isWalletQrCodeDisplayed()) {
+			return false;
+		}
+		String pageSource = normalizeMessage(driver.getPageSource());
+		return pageSource.contains("authenticate") || pageSource.contains("don't refresh")
+				|| pageSource.contains("dont refresh") || pageSource.contains("wallet");
+	}
+
+	public boolean isWalletAuthenticateProgressDisplayed() {
+		if (isWalletQrCodeDisplayed()) {
+			return false;
+		}
+		for (WebElement indicator : driver.findElements(By.cssSelector(".loading-indicator"))) {
+			if (!indicator.isDisplayed()) {
+				continue;
+			}
+			String text = normalizeMessage(safeGetText(indicator));
+			if (text.contains("authenticate") || text.contains("don't refresh")
+					|| text.contains("dont refresh")) {
+				return true;
+			}
+		}
+		String expectedMessage = ResourceBundleLoader.get("loadingMsgs.link_auth_waiting");
+		if (!expectedMessage.startsWith("!!MISSING_KEY:")) {
+			String normalizedExpected = normalizeMessage(expectedMessage);
+			for (WebElement indicator : driver.findElements(By.cssSelector(".loading-indicator"))) {
+				if (indicator.isDisplayed()
+						&& normalizeMessage(safeGetText(indicator)).contains(normalizedExpected.split("\\{\\{")[0])) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
 	public boolean waitForWalletQrCodeExpiredMessage() {
 		int waitSeconds = LinkAuthUtil.getConfiguredLinkCodeExpireSeconds()
 				+ parseTimeoutProperty("injiQrExpiredUiWaitBufferSeconds", 90);
@@ -319,6 +430,80 @@ public class LoginOptionsPage extends BasePage {
 	public boolean isRefreshQrCodeButtonDisplayed() {
 		List<WebElement> refreshButtons = driver.findElements(By.id("refresh_qr_code"));
 		return refreshButtons.stream().anyMatch(WebElement::isDisplayed);
+	}
+
+	public boolean isWalletQrCodeImageLoaded() {
+		try {
+			String src = getWalletQrCodeSrc();
+			return src != null && src.startsWith("data:image") && src.length() > 1000;
+		} catch (Exception e) {
+			return false;
+		}
+	}
+
+	public boolean isWalletQrCodeWithEmbeddedLogo() {
+		try {
+			String src = getWalletQrCodeSrc();
+			return src != null && src.startsWith("data:image") && src.length() > 4000;
+		} catch (Exception e) {
+			return false;
+		}
+	}
+
+	public boolean isLinkCodeLimitErrorVisible() {
+		String bannerText = normalizeMessage(getVisibleErrorBannerText());
+		String expected = ResourceBundleLoader.get("errors.link_code_limit_reached");
+		if (!expected.startsWith("!!MISSING_KEY:") && bannerText.contains(normalizeMessage(expected))) {
+			return true;
+		}
+		return bannerText.contains("link code") && bannerText.contains("limit");
+	}
+
+	public boolean isInvalidQrConfigErrorVisible() {
+		String bannerText = normalizeMessage(getVisibleErrorBannerText());
+		String expected = ResourceBundleLoader.get("errors.wallet.invalid_qrcode_config");
+		if (!expected.startsWith("!!MISSING_KEY:") && bannerText.contains(normalizeMessage(expected))) {
+			return true;
+		}
+		return bannerText.contains("invalid qrcode configuration")
+				|| bannerText.contains("invalid qrcode config");
+	}
+
+	public boolean waitForRedirectToRelyingPartyWithError(String errorCode) {
+		WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(45));
+		try {
+			wait.until(webDriver -> {
+				String url = webDriver.getCurrentUrl().toLowerCase();
+				return url.contains("error=" + errorCode.toLowerCase())
+						|| url.contains("error%3d" + errorCode.toLowerCase());
+			});
+			return true;
+		} catch (TimeoutException e) {
+			return false;
+		}
+	}
+
+	public String getCurrentUrlErrorCode() {
+		String url = driver.getCurrentUrl();
+		int errorIndex = url.indexOf("error=");
+		if (errorIndex < 0) {
+			errorIndex = url.indexOf("error%3D");
+			if (errorIndex >= 0) {
+				return extractUrlParam(url.substring(errorIndex + 9));
+			}
+			return null;
+		}
+		return extractUrlParam(url.substring(errorIndex + 6));
+	}
+
+	private String extractUrlParam(String remainder) {
+		int ampIndex = remainder.indexOf('&');
+		String value = ampIndex >= 0 ? remainder.substring(0, ampIndex) : remainder;
+		try {
+			return java.net.URLDecoder.decode(value, java.nio.charset.StandardCharsets.UTF_8);
+		} catch (Exception e) {
+			return value;
+		}
 	}
 
 	public void clickRefreshQrCodeButton() {
@@ -439,9 +624,29 @@ public class LoginOptionsPage extends BasePage {
 
 	public void selectLanguage(String language) {
 		WebElement langOption = waitForElementVisible(
-				By.xpath("//div[@role='menuitem' and normalize-space()='" + language + "']"));
+				By.xpath("//button[@role='option' and normalize-space()=" + toXpathLiteral(language) + "]"));
+		clickOnElement(langOption, "Selected language option: " + language);
+		// Selecting a language triggers an async re-fetch/re-render of the whole page (new /flow/meta
+		// call for the chosen language, nav bar re-render, etc.) - wait for the dropdown button itself
+		// to reflect the new selection before returning, so callers that immediately interact with the
+		// page again (including BaseTest's auto-switch racing a scenario's own language step) don't hit
+		// a stale/mid-transition DOM.
+		By navLanguageButton = By.cssSelector("nav button[aria-haspopup='listbox']");
+		new WebDriverWait(driver, Duration.ofSeconds(EsignetConfigManager.getTimeout())).until(d -> {
+			List<WebElement> buttons = d.findElements(navLanguageButton);
+			return !buttons.isEmpty() && buttons.get(0).getText().trim().contains(language);
+		});
+	}
 
-		langOption.click();
+	/** Opens the dropdown and switches the UI to the given 3-letter language code's display name;
+	 *  no-ops if unmapped. */
+	public void selectLanguageByCode(String languageCode) {
+		String displayName = utils.LanguageUtil.getDisplayName(languageCode);
+		if (displayName == null || displayName.equals(languageCode)) {
+			return;
+		}
+		clickOnLanguageDropdown();
+		selectLanguage(displayName);
 	}
 
 	public boolean isUILanguageChanged(String text) {
@@ -461,6 +666,10 @@ public class LoginOptionsPage extends BasePage {
 
 	public boolean isMobileNumberOptionDisplayed() {
 		return isElementVisible(mobileNumberOption, "Verified mobile number option is displayed for authentication");
+	}
+
+	public void clickOnMobileNumberOption() {
+		clickOnElement(mobileNumberOption, "Selected mobile number as the login ID type");
 	}
 
 	public boolean isNrcIdOptionDisplayed() {
@@ -499,28 +708,57 @@ public class LoginOptionsPage extends BasePage {
 		return isElementVisible(mobileSelected, "Verified mobile number seleted in authentication screen");
 	}
 
+	// "Displayed" for a native <select>'s <option> doesn't mean visually rendered (that's the
+	// browser/OS's own dropdown chrome, invisible to WebDriver until opened) - it means the option
+	// genuinely exists as a selectable choice. Checking via Select.getOptions() is the correct way
+	// to interact with a native select in Selenium.
 	public boolean isKhmCountryCodePrefixDisplayed() {
-		return isElementVisible(khmCountryCode, "Verified khm country code prefix is displayed");
+		waitForElementVisible(prefixNumberField);
+		return new Select(prefixNumberField).getOptions().stream()
+				.anyMatch(option -> "+855".equals(option.getAttribute("value")));
 	}
 
 	public boolean isIndCountryCodePrefixDisplayed() {
-		return isElementVisible(indCountryCode, "Verified ind country code prefix is displayed");
+		waitForElementVisible(prefixNumberField);
+		return new Select(prefixNumberField).getOptions().stream()
+				.anyMatch(option -> "+91".equals(option.getAttribute("value")));
 	}
 
 	public void clickOnPrefixNumberFieldButton() {
-		clickOnElement(prefixNumberField, "Clicked on Prefix Number Field button");
+		clickOnElement(prefixNumberField, "Clicked on Prefix Number select field");
 	}
 
 	public void clickOnIndCountryCodePrefix() {
-		clickOnElement(indCountryCode, "Clicked on ind country code prefix button");
+		waitForElementVisible(prefixNumberField);
+		new Select(prefixNumberField).selectByValue("+91");
 	}
 
 	public void clickOnKhmCountryCodePrefix() {
-		clickOnElement(khmCountryCode, "Clicked on khm country code prefix button");
+		waitForElementVisible(prefixNumberField);
+		new Select(prefixNumberField).selectByValue("+855");
 	}
 
 	public boolean isOtpInputFieldIsDisplayed() {
-		return isElementVisible(otpInputField, "Verified otp input field is displayed");
+		// otpInputFields.isEmpty() has no wait built in - called right after clicking Get OTP, it can
+		// race the page transition and see the list still empty even though the OTP screen is about to
+		// render. Poll for at least one box to show up first instead of checking once immediately.
+		try {
+			new WebDriverWait(driver, Duration.ofSeconds(EsignetConfigManager.getTimeout()))
+					.until(d -> !otpInputFields.isEmpty());
+		} catch (TimeoutException e) {
+			return false;
+		}
+		return isElementVisible(otpInputFields.get(0), "Verified otp input field is displayed");
+	}
+
+	/** Types one OTP digit per box, in order - the OTP field is 6 separate single-character inputs. */
+	public void enterOtp(String otp) {
+		enterOtpDigits(otpInputFields, otp,
+				(field, digit) -> enterText(field, String.valueOf(digit), "Entered OTP digit"));
+	}
+
+	public void clickOnSubmitOtpButton() {
+		clickOnElement(submitOtpButton, "Clicked on submit OTP button");
 	}
 
 	public boolean isAttentionScreenIsDisplayed() {
@@ -544,10 +782,40 @@ public class LoginOptionsPage extends BasePage {
 				"Verified invalid individual id error message is displayed");
 	}
 
+	public boolean waitForOtpAuthenticationDeniedForInfant() {
+		long deadline = System.currentTimeMillis() + 30_000L;
+		while (System.currentTimeMillis() < deadline) {
+			if (isAttentionScreenIsDisplayed()) {
+				return false;
+			}
+			if (!getVisibleErrorBannerText().isBlank()) {
+				return true;
+			}
+			try {
+				Thread.sleep(500);
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				return false;
+			}
+		}
+		return false;
+	}
+
+	public String getOtpAuthenticationDenialDetails() {
+		String banner = getVisibleErrorBannerText();
+		if (!banner.isBlank()) {
+			return banner;
+		}
+		if (isAttentionScreenIsDisplayed()) {
+			return "Unexpected navigation to attention screen after infant OTP verify";
+		}
+		return "No error banner displayed after infant OTP verify";
+	}
+
 	public void enterVid(String vid) {
-		waitForElementVisible(vidField);
-		vidField.clear();
-		enterText(vidField, vid, "Entered vid in vid field");
+		waitForElementVisible(idInputField);
+		idInputField.clear();
+		enterText(idInputField, vid, "Entered vid in vid field");
 	}
 
 	public void clickOnEmailOptionButton() {
@@ -555,9 +823,9 @@ public class LoginOptionsPage extends BasePage {
 	}
 
 	public void enterEmail(String email) {
-		waitForElementVisible(emailField);
-		emailField.clear();
-		enterText(emailField, email, "Entered email in email field");
+		waitForElementVisible(idInputField);
+		idInputField.clear();
+		enterText(idInputField, email, "Entered email in email field");
 	}
 
 	public boolean isBiometricIntegrationContainerDisplayed() {
@@ -691,6 +959,11 @@ public class LoginOptionsPage extends BasePage {
 			return false;
 		}
 	}
+
+	private static final By ICON_RETRY_BUTTON_SELECTOR = By.cssSelector(
+			"#secure-biometric-interface-integration button[type='button'].sbd-cursor-pointer.sbd-ml-1, "
+					+ "#secure-biometric-interface-integration div.sbd-dropdown_container + button[type='button'], "
+					+ "#secure-biometric-interface-integration div.sbd-flex button[type='button'].sbd-cursor-pointer");
 
 	public void clickOnBiometricDeviceScanRetryButton() {
 		if (isBiometricDeviceDiscovered()) {
@@ -1200,6 +1473,8 @@ public class LoginOptionsPage extends BasePage {
 			return "";
 		}
 		return " (UI error: " + banner + ")";
+		WebElement retryButton = wait.until(ExpectedConditions.elementToBeClickable(ICON_RETRY_BUTTON_SELECTOR));
+		clickOnElement(retryButton, "Clicked on biometric device scan retry button");
 	}
 
 	private int getBiometricScanningWaitSeconds() {
@@ -1262,12 +1537,12 @@ public class LoginOptionsPage extends BasePage {
 		}
 
 		String expectedMessage = ResourceBundleLoader.get("errors.no_devices_found_msg");
-		if (!expectedMessage.startsWith("!!MISSING_KEY:")
-				&& containerText.contains(normalizeMessage(expectedMessage))) {
-			return true;
+		if (expectedMessage.startsWith("!!MISSING_KEY:")) {
+			LOGGER.warn("errors.no_devices_found_msg is missing from the resource bundle - "
+					+ "device-not-found detection relied only on the English literal check above.");
+			return false;
 		}
-
-		return false;
+		return containerText.contains(normalizeMessage(expectedMessage));
 	}
 
 	private boolean isTextVisibleWithinBiometricContainer(String normalizedPartialText) {

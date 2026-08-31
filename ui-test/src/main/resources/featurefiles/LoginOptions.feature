@@ -17,7 +17,7 @@ Feature: Esignet Login Options Page
    
   Examples:
    | other lang | text   |
-   | हिंदी        | लॉगिन    |
+   | हिन्दी        | लॉगिन    |
    
   @mobile @mobileViewFeatures
   Scenario: Verifying the UI in mobile view
@@ -38,7 +38,7 @@ Feature: Esignet Login Options Page
    And click on verify Otp button
    
    
-   @smoke @supportOfPrefixAndPostfix
+   @smoke @supportOfPrefixAndPostfix @MOSIP-22717
   Scenario: Verifying support for multiple prefix and postfix type for the individual ID
    When click on Language selection option
    And select the mandatory language
@@ -105,6 +105,17 @@ Feature: Esignet Login Options Page
    When user enters the correct otp
    And click on verify Otp button
    Then verify consent is not requested after authentication
+   And clicks on sign in with esignet button in login page
+   When click on Language selection option
+   And select the mandatory language
+   And user click on Login with Otp
+   Then clicks on vid option button in authentication screen page
+   When user enters prerequisite infant uin into vid field
+   And user click on get otp button
+   Then verify user navigate to verify otp screen
+   When user enters the correct otp
+   And click on verify Otp button
+   Then verify otp authentication is denied for infant uin
 
   @smoke @BiometricDeviceNotDetected @MOSIP-22718
   Scenario: Log in with Biometrics - Device Not Detected (MOSIP-22718 TC_04)
@@ -160,61 +171,47 @@ Feature: Esignet Login Options Page
    Given user captures the authorize url
    When click on Language selection option
    And select the mandatory language
-   # TC_27 - More ways to sign in exposes Login with Biometrics
    When user opens login with biometrics via more ways to sign in if needed
    Then verify login with biometrics option is available in sign in options
-   # TC_28 - device not detected when Mock MDS is stopped
    When user click on Login with Biometrics
    Then verify secure biometric interface is displayed
    When user clicks on uin vid option on biometric screen
    And verify scanning devices message is displayed on biometric screen
    Then verify device not found message is displayed on biometric screen
-   # TC_06 / TC_09 - start Mock MDS on retry and verify L1 device discovered
    When mock mds is started for biometric device scan
    And user clicks on biometric device scan retry button
    Then verify biometric device is discovered on biometric screen
-   # TC_10 / TC_11 - L0 / unregistered provider not listed in mock data
    Then verify l0 or unregistered biometric device is not available
-   # TC_13 - Scan and Verify button visible after device discovery
    Then verify biometric scan and verify button is displayed
-   # TC_14 / TC_15 - empty UIN/VID keeps Scan and Verify disabled
    When user clears biometric vid field
    Then verify biometric scan and verify button is disabled
-   # TC_16 / TC_17 - single character enables Scan and Verify
    When user enters "1" into biometric vid field
    Then verify biometric scan and verify button is enabled
-   # TC_24 - invalid UIN
    When user clears biometric vid field
    And user enters invalid uin into biometric vid field
    And user clicks biometric scan and verify button
    Then verify biometric error message contains "incorrect"
    When user dismisses biometric error banner if displayed
-   # TC_25 - invalid VID
    When user enters invalid vid into biometric vid field
    And user clicks biometric scan and verify button
    Then verify biometric error message contains "incorrect"
    When user dismisses biometric error banner if displayed
-   # TC_20 - exception UIN (configure biometricExceptionUin when available)
    When user enters configured exception uin into biometric vid field
    And user clicks biometric scan and verify button
    Then verify biometric error message contains "biometric data"
    When user dismisses biometric error banner if displayed
-   # TC_21 - exception VID (configure biometricExceptionVid when available)
    When user enters configured exception vid into biometric vid field
    And user clicks biometric scan and verify button
    Then verify biometric error message contains "biometric data"
    When user dismisses biometric error banner if displayed
-   # TC_22 - wrong biometrics for UIN (configure biometricWrongMatchUin when available)
    When user enters configured wrong match uin into biometric vid field
    And user clicks biometric scan and verify button
    Then verify biometric error message contains "did not match"
    When user dismisses biometric error banner if displayed
-   # TC_23 - wrong biometrics for VID (configure biometricWrongMatchVid when available)
    When user enters configured wrong match vid into biometric vid field
    And user clicks biometric scan and verify button
    Then verify biometric error message contains "did not match"
    When user dismisses biometric error banner if displayed
-   # TC_19 - valid VID + correct biometrics navigates to consent
    When user enters prerequisite vid into biometric vid field
    And user clicks biometric scan and verify button
    Then verify user is authenticated via biometrics successfully
@@ -227,55 +224,128 @@ Feature: Esignet Login Options Page
    And mock mds is started for biometric device scan
    And user clicks on biometric device scan retry button
    Then verify biometric device is discovered on biometric screen
-   # TC_18 - valid UIN + correct biometrics navigates to consent
    When user enters prerequisite uin into biometric vid field
    And user clicks biometric scan and verify button
    Then verify user is authenticated via biometrics successfully
-   # TC_29 - capture timeout (real device only; skipped for Mock MDS)
    Then verify biometric capture timeout scenario is skipped for mock mds
 
   @smoke @LoginWithInji @MOSIP-24755
-  Scenario: IdP-UI Login with Inji QR code (MOSIP-24755 TC_05-TC_21)
+  Scenario: IdP-UI Login with Inji QR code (MOSIP-24755 TC_05-TC_19)
    Given user captures the authorize url
    When click on Language selection option
    And select the mandatory language
-   # TC_05 - Login with Inji tab shows QR code screen
    When user opens login with inji via more ways to sign in if needed
    Then verify login with inji option is available in sign in options
    When user click on Login with Inji
    Then verify inji qr code login screen is displayed
-   # TC_06 - link-code expiry is ~60 sec
    And verify link code expires in configured seconds
-   # TC_07 / TC_08 - QR expiry message and refresh option
+   When user refreshes browser on inji qr login screen
+   And user opens login with inji via more ways to sign in if needed
+   And user click on Login with Inji
+   Then verify different inji link code is generated for same transaction after page refresh
    When user waits for inji qr code to expire without scanning
    Then verify inji qr code expired message is displayed
    And verify refresh qr code option is available after inji qr expiry
-   # TC_09 - refresh produces a new QR code
    When user refreshes inji qr code after expiry
    Then verify new inji qr code is generated after refresh
-   # TC_15 - expired link-code cannot link transaction
    And verify link code expires in configured seconds
    When user waits for first inji link code to expire
    And user attempts to link transaction with expired inji link code
-   # TC_16-TC_21 - link-code API behaviour on a fresh transaction
    When user relaunches authorize flow for inji link code tests
    And click on Language selection option
    And select the mandatory language
    And user opens login with inji via more ways to sign in if needed
    And user click on Login with Inji
    And verify link code expires in configured seconds
-   # TC_20 - link-code works when transaction is not yet shifted
-   When user links transaction with first inji link code before shift
+   When user validates inji qr code by simulating wallet scan
+   Then verify inji transaction is shifted to wallet app
+   And verify inji qr authenticate progress is displayed
    When user relaunches authorize flow for inji link code tests
    And click on Language selection option
    And select the mandatory language
    And user opens login with inji via more ways to sign in if needed
    And user click on Login with Inji
    And verify link code expires in configured seconds
-   # TC_16 - superseded link-code is rejected after a new link-code is generated
    When user generates second inji link code for same transaction
    And user attempts to link transaction with first inji link code after second is generated
-   # TC_17 / TC_21 - latest link-code links; old link-code fails after shift
+   Then verify first inji link code is rejected after second link code is generated
    When user links transaction with latest inji link code
+   Then verify linked inji link code status is LINKED and other link code times out
    Then verify new inji link code cannot be generated after transaction is linked
    And user attempts to link transaction with old inji link code after shift
+
+  @LoginWithInji @MOSIP-25869
+  Scenario: Max active inji link codes per transaction (MOSIP-25869 TC_09)
+   Given user captures the authorize url
+   When click on Language selection option
+   And select the mandatory language
+   When user opens login with inji via more ways to sign in if needed
+   And user click on Login with Inji
+   When user generates 4 inji link codes for same transaction
+   Then verify inji link code index 1 is no longer active
+   And verify inji link code index 2 is no longer active
+   When user simulates inji wallet scan with link code index 3
+   Then verify inji transaction is shifted to wallet app
+   And verify inji qr authenticate progress is displayed
+
+  # MOSIP-24755 TC_22-TC_26 require real Inji mobile app (credential list, face auth, inji consent, RP login).
+  # Automate manually or via a dedicated mobile/device farm suite; not covered in this browser UI suite.
+
+  @LoginWithInji @MOSIP-26238
+  Scenario: Inji wallet logo on QR code (MOSIP-26238 TC_03 TC_04)
+   Given user captures the authorize url
+   When click on Language selection option
+   And select the mandatory language
+   When user opens login with inji via more ways to sign in if needed
+   When user click on Login with Inji without capturing extra link code
+   Then verify inji qr code login screen is displayed
+   And verify inji wallet logo is displayed on qr code
+   When user validates inji qr code by simulating wallet scan
+   Then verify inji transaction is shifted to wallet app
+
+  @LoginWithInji @ES-206
+  Scenario: Inji link code limit and auto refresh (ES-206 TC_15 TC_16)
+   Given user captures the authorize url
+   When click on Language selection option
+   And select the mandatory language
+   When user opens login with inji via more ways to sign in if needed
+   When user click on Login with Inji without capturing extra link code
+   And user captures first inji link code from ui session
+   When user exhausts inji server link code limit via api
+   And user clicks inji qr refresh after link code limit exhausted
+   Then verify user redirected to relying party with invalid_transaction
+   When user relaunches authorize flow for inji link code tests
+   And click on Language selection option
+   And select the mandatory language
+   When user opens login with inji via more ways to sign in if needed
+   When user click on Login with Inji without capturing extra link code
+   And user captures first inji link code from ui session
+   Then verify inji qr auto refresh limit shows expired state
+   When user attempts to generate inji link code beyond server limit
+   Then verify user redirected to relying party with invalid_transaction
+
+  @LoginWithInji @ES-21
+  Scenario: Active inji link codes with auto refresh (ES-21 TC_02 TC_03)
+   Given user captures the authorize url
+   When click on Language selection option
+   And select the mandatory language
+   When user opens login with inji via more ways to sign in if needed
+   When user click on Login with Inji without capturing extra link code
+   And user captures first inji link code from ui session
+   When user generates 3 inji link codes via api for same transaction
+   Then verify inji link code index 1 is no longer active
+   And verify inji link code index 2 is still active
+   When user simulates inji wallet scan with link code index 2
+   Then verify inji transaction is shifted to wallet app
+
+  @mobile @LoginWithInji @ES-254
+  Scenario: Mobile view Inji QR login (ES-254 TC_05)
+   Given user captures the authorize url
+   When click on Language selection option
+   And select the mandatory language
+   When user opens login with inji via more ways to sign in if needed
+   When user click on Login with Inji without capturing extra link code
+   Then verify inji qr code login screen is displayed
+   When user simulates inji wallet scan on mobile viewport
+   Then verify inji transaction is shifted to wallet app
+   And verify inji qr authenticate progress is displayed

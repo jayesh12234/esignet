@@ -90,22 +90,29 @@ public class AddIdentity extends EsignetUtil implements ITest {
 			throw new SkipException(
 					"Skipped: " + testCaseName + " - mock-identity-system identity is not used on a Sunbird RC-backed server");
 		}
-		writeConfigValueAndSkipIfProvided(isMockIdentitySystem ? "mockUin" : "uin", testCaseName, "UIN");
+		if (testCaseName.contains("Infant")) {
+			writeConfigValueAndSkipIfProvided("infantUin", testCaseName, "UIN");
+		} else {
+			// A configured uin/mockUin already skips (with its UIN written) above; uinPhoneNumber alone
+			// only overrides the OTP-login phone and must not skip identity creation on its own, or no UIN
+			// ever gets written for downstream $ID:...AddIdentity..._UIN$ resolution to consume.
+			writeConfigValueAndSkipIfProvided(isMockIdentitySystem ? "mockUin" : "uin", testCaseName, "UIN");
+		}
+
+		String mockInputJson = null;
 
 		String configuredPhoneNumber = EsignetConfigManager.getproperty("uinPhoneNumber");
 
 		if (isMockIdentitySystem) {
 			String url = ApplnURI.replace("-internal", "") + testCaseDTO.getEndPoint();
 
-			String inputJson = generateDynamicMockIdentityRequest(getMockIdentitySchema(), testCaseName);
+			mockInputJson = generateDynamicMockIdentityRequest(getMockIdentitySchema(), testCaseName);
 
-			inputJson = EsignetUtil.inputstringKeyWordHandler(inputJson, testCaseName);
+			mockInputJson = EsignetUtil.inputstringKeyWordHandler(mockInputJson, testCaseName);
 
-			GlobalMethods.reportRequest(null, inputJson, url);
+			GlobalMethods.reportRequest(null, mockInputJson, url);
 
-			response = RestClient.post(url, inputJson);
-
-			extractAndStoreMockIdentityDetails(testCaseName, inputJson);
+			response = RestClient.post(url, mockInputJson);
 
 			GlobalMethods.reportResponse(response.getHeaders().asList().toString(), url, response);
 
@@ -172,6 +179,10 @@ public class AddIdentity extends EsignetUtil implements ITest {
 
 		if (!OutputValidationUtil.publishOutputResult(outputValid))
 			throw new AdminTestException("Failed at output validation");
+
+		if (isMockIdentitySystem) {
+			extractAndStoreMockIdentityDetails(testCaseName, mockInputJson);
+		}
 
 	}
 

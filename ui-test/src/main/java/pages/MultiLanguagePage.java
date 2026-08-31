@@ -16,22 +16,48 @@ public class MultiLanguagePage extends BasePage {
         super(driver);
     }
 
-    @FindBy(id = "language_selection")
+    // The language switcher has no id at all - only aria-haspopup="listbox" inside the nav bar - and
+    // its options render as role="option" buttons, not role="menuitem"/plain divs. Verified against
+    // the live login page.
+    @FindBy(css = "nav button[aria-haspopup='listbox']")
     WebElement languageSelection;
 
-    public void clickOnLanguageSelection() {
+    /** @return false if a real esignet page genuinely isn't reachable (caller should treat as not
+     *  applicable and skip); true otherwise. */
+    public boolean clickOnLanguageSelection() {
+        if (!ensureFreshEsignetLoginPage(By.cssSelector("nav button[aria-haspopup='listbox']"))) {
+            return false;
+        }
         clickOnElement(languageSelection,"Clicked on language selection option");
+        return true;
     }
 
     public void clickOnLanguage() {
         String langCode = BaseTestUtil.getThreadLocalLanguage();
-        WebElement language = waitForElementVisible(By.xpath("//div[text()='" + LanguageUtil.getDisplayName(langCode) +"']"));
+        By optionLocator = By.xpath("//button[@role='option' and normalize-space()="
+                + toXpathLiteral(LanguageUtil.getDisplayName(langCode)) + "]");
+        WebElement language;
+        try {
+            language = waitForElementVisible(optionLocator);
+        } catch (org.openqa.selenium.TimeoutException e) {
+            // Occasional flake: the dropdown trigger click doesn't always land as an open dropdown
+            // (observed live, not consistently reproducible) - re-click the trigger and retry once
+            // before giving up for real.
+            clickOnElement(languageSelection, "Re-clicked language selection option (retry)");
+            language = waitForElementVisible(optionLocator);
+        }
         clickOnElement(language,"Selected the given language");
     }
 
+    // Verified live: esignet-go persists the chosen language in a real cookie named
+    // "thunderid-i18n-language" (2-letter code, e.g. "en"/"fr"/"ar"). Falls back to "i18nextLng" -
+    // the classic-eSignet cookie name - for environments running that build instead.
     public String getLanguageFromCookie() {
-        JavascriptExecutor js = (JavascriptExecutor) driver;
-        return (String) js.executeScript("return window.localStorage.getItem('i18nextLng');");
+        org.openqa.selenium.Cookie cookie = driver.manage().getCookieNamed("thunderid-i18n-language");
+        if (cookie == null) {
+            cookie = driver.manage().getCookieNamed("i18nextLng");
+        }
+        return cookie != null ? cookie.getValue() : null;
     }
 
     public String getNavigatorLanguage() {

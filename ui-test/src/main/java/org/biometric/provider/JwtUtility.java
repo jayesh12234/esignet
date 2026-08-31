@@ -60,6 +60,10 @@ public class JwtUtility {
 
 	private static volatile String cachedIdaCertificate;
 
+	public static void clearIdaCertificateCache() {
+		cachedIdaCertificate = null;
+	}
+
 	public static String getJwt(byte[] data, PrivateKey privateKey, X509Certificate x509Certificate) {
 		String jwsToken = null;
 		JsonWebSignature jws = new JsonWebSignature();
@@ -192,11 +196,69 @@ public class JwtUtility {
 			LOGGER.warning("CertsUtil IDA certificate fetch failed: " + e.getMessage());
 		}
 
+		for (String idaBaseUrl : resolveIdaCertificateBaseUrls()) {
+			String certificate = fetchIdaCertificateFromBaseUrl(idaBaseUrl);
+			if (certificate != null && !certificate.isBlank()) {
+				LOGGER.info("Loaded IDA FIR certificate via " + idaBaseUrl);
+				return certificate;
+			}
+		}
+		return null;
+	}
+
+	private java.util.List<String> resolveIdaCertificateBaseUrls() {
+		java.util.LinkedHashSet<String> candidates = new java.util.LinkedHashSet<>();
+		String componentUrl = utils.EsignetUtil.getMosipComponentBaseUrl("idauthentication");
+		if (componentUrl != null && !componentUrl.isBlank()) {
+			candidates.add(normalizeIdaBaseUrl(componentUrl));
+		}
+		String derivedFromEsignet = deriveInternalApiBaseFromEsignetHost();
+		if (derivedFromEsignet != null && !derivedFromEsignet.isBlank()) {
+			candidates.add(derivedFromEsignet);
+		}
+		if (BaseTestCase.ApplnURI != null && !BaseTestCase.ApplnURI.isBlank()) {
+			candidates.add(normalizeIdaBaseUrl(BaseTestCase.ApplnURI));
+		}
+		return new java.util.ArrayList<>(candidates);
+	}
+
+	private static String normalizeIdaBaseUrl(String baseUrl) {
+		String normalized = baseUrl.trim();
+		if (!normalized.startsWith("http://") && !normalized.startsWith("https://")) {
+			normalized = "https://" + normalized;
+		}
+		return normalized.replaceAll("/+$", "");
+	}
+
+	private static String deriveInternalApiBaseFromEsignetHost() {
+		String esignetBase = io.mosip.testrig.apirig.utils.ConfigManager.getproperty("eSignetbaseurl");
+		if (esignetBase == null || esignetBase.isBlank()) {
+			esignetBase = utils.EsignetConfigManager.getproperty("eSignetbaseurl");
+		}
+		if (esignetBase == null || esignetBase.isBlank()) {
+			return null;
+		}
 		try {
-			if (BaseTestCase.ApplnURI == null || BaseTestCase.ApplnURI.isBlank()) {
+			java.net.URI uri = java.net.URI.create(normalizeIdaBaseUrl(esignetBase));
+			String host = uri.getHost();
+			if (host == null || host.isBlank()) {
 				return null;
 			}
-			String endpoint = BaseTestCase.ApplnURI
+			if (host.contains("esqa2")) {
+				return "https://api-internal.esqa2.mosip.net";
+			}
+			if (host.contains("qa11new")) {
+				return "https://api-internal.qa11new.mosip.net";
+			}
+		} catch (Exception e) {
+			LOGGER.warning("Failed to derive internal API base from eSignet host: " + e.getMessage());
+		}
+		return null;
+	}
+
+	private String fetchIdaCertificateFromBaseUrl(String baseUrl) {
+		try {
+			String endpoint = normalizeIdaBaseUrl(baseUrl)
 					+ "/idauthentication/v1/internal/getCertificate?applicationId=IDA&referenceId=IDA-FIR";
 			String authToken = resolveIdaAuthToken();
 			if (authToken == null || authToken.isBlank()) {
@@ -207,15 +269,11 @@ public class JwtUtility {
 			if (response == null || response.getStatusCode() < 200 || response.getStatusCode() >= 300) {
 				return null;
 			}
-			String certificate = response.jsonPath().getString("response.certificate");
-			if (certificate != null && !certificate.isBlank()) {
-				LOGGER.info("Loaded IDA FIR certificate via apitest RestClient");
-				return certificate;
-			}
+			return response.jsonPath().getString("response.certificate");
 		} catch (Exception e) {
-			LOGGER.warning("Apitest RestClient IDA certificate fetch failed: " + e.getMessage());
+			LOGGER.warning("IDA certificate fetch failed for " + baseUrl + ": " + e.getMessage());
+			return null;
 		}
-		return null;
 	}
 
 	private String resolveIdaAuthToken() {

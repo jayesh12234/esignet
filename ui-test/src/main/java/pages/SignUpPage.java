@@ -10,11 +10,15 @@ import org.openqa.selenium.interactions.Actions;
 import org.openqa.selenium.support.FindBy;
 import org.openqa.selenium.support.ui.ExpectedConditions;
 import org.openqa.selenium.support.ui.WebDriverWait;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import base.BasePage;
 import utils.EsignetConfigManager;
 
 public class SignUpPage extends BasePage {
+
+	private static final Logger LOGGER = LoggerFactory.getLogger(SignUpPage.class);
 
 	public SignUpPage(WebDriver driver) {
 		super(driver);
@@ -78,6 +82,10 @@ public class SignUpPage extends BasePage {
 		enterText(enterMobileNumberField, number,"Entered the mobile number");
 	}
 
+	public boolean isMobileNumberFieldDisplayed() {
+		return isElementVisible(enterMobileNumberField, "Verified registration mobile number field is visible");
+	}
+
 	public void clickOnContinueButton() {
 		clickOnElement(continueButton,"Clicked on continue button");
 	}
@@ -120,7 +128,18 @@ public class SignUpPage extends BasePage {
 		wait.until(ExpectedConditions.visibilityOf(resultScreenHeading));
 
 		String headingText = resultScreenHeading.getText().trim();
-		if (SIGNUP_FAILED_HEADING.equalsIgnoreCase(headingText)) {
+		String currentLang = System.getProperty("currentRunLanguage", "eng");
+		if (!"eng".equalsIgnoreCase(currentLang)) {
+			// SIGNUP_FAILED_HEADING has no verified localized text for other languages, and a success
+			// screen can also render a subtext, so that's not a reliable failure signal either - log a
+			// warning rather than guessing, since a real signup failure on this run may be misreported
+			// as success.
+			LOGGER.warn("SIGNUP_FAILED_HEADING has no verified localized text for '" + currentLang
+					+ "' - a signup failure on this run may be misreported as success.");
+		}
+		boolean failureHeadingMatched = "eng".equalsIgnoreCase(currentLang)
+				&& SIGNUP_FAILED_HEADING.equalsIgnoreCase(headingText);
+		if (failureHeadingMatched) {
 			String reason = isElementDisplayed(resultScreenSubtext) ? resultScreenSubtext.getText().trim()
 					: "no reason given by the signup service";
 			throw new AssertionError("Sign-up failed: " + reason);

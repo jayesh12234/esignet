@@ -4,6 +4,7 @@ import java.io.InputStream;
 import java.net.URLEncoder;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
@@ -36,12 +37,15 @@ import org.json.JSONException;
 import org.json.JSONObject;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.chrome.ChromeDriver;
+import org.openqa.selenium.support.ui.ExpectedConditions;
+import org.openqa.selenium.support.ui.WebDriverWait;
 import org.openqa.selenium.devtools.DevTools;
 import org.openqa.selenium.devtools.v134.network.Network;
 import org.openqa.selenium.logging.LogEntries;
 import org.openqa.selenium.logging.LogEntry;
 import org.testng.SkipException;
 
+import base.BasePage;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nimbusds.jose.JWSAlgorithm;
@@ -153,6 +157,7 @@ public class EsignetUtil extends AdminTestUtil {
 	protected static final String OIDC_JWK_FOR_PAR_EMPTY_TITLE = "oidcJWKForPAREmptyTitle";
 	protected static final String OIDC_JWK_FOR_PAR_SINGLE_ACR_VALUE = "oidcJWKForPARSingleAcrValue";
 	protected static final String OIDC_JWK_FOR_PAR_REQUIRED = "oidcJWKForParRequired";
+	protected static final String OIDC_JWK_FOR_PAR_SECONDARY = "oidcJWKForPARSecondary";
 	protected static RSAKey oidc_JWK_Key_For_PAR = null;
 	protected static final String CLAIMS_REQUEST = "config/claims.json";
 
@@ -163,6 +168,13 @@ public class EsignetUtil extends AdminTestUtil {
 	private static final String scope = "openid profile";
 	public static final String AUTHORIZE_SCOPE_ONLY = "openid Manage-VID";
 	private static final String state = "eree2311";
+	// Used on every authorize URL, including LoginOptions.feature's re-login scenario that asserts
+	// consent is skipped on repeat login - prompt=consent forces a fresh consent screen every time,
+	// which would invalidate that assertion. Not changed here: this constant feeds every scenario's
+	// authorize URL, so switching it risks regressing the (many) scenarios that rely on prompt=consent
+	// actually showing consent. That specific assertion is currently a no-op outside the "mosipid"
+	// plugin (see ConsentStepDefinition#prerequisiteVidsAvailableForConsentRegistry), so this is inert
+	// under the mock-plugin config this module runs against.
 	private static final String prompt = "consent";
 	private static final String aud_key = "pushed_authorization_request_endpoint";
 
@@ -214,12 +226,45 @@ public class EsignetUtil extends AdminTestUtil {
 			logger.setLevel(Level.ERROR);
 	}
 
-	// Actuator-derived, mirroring eSignet's own api-test getPluginName() - no local config. Sunbird RC
-	// still returns "mock" here (same orchestration as plain mock); use isSunbirdAuthenticatorActive()
-	// to distinguish them.
+	// True when running against the mock identity plugin (this environment). Callers use this to
+	// bypass an individual check for a screen/element the mock plugin's simplified flow never
+	// renders (no separate eKYC sequence, no real biometric device UI, etc.) WITHOUT aborting the
+	// whole scenario via SkipException - just that one check is a no-op, everything else still runs.
+	public static boolean isMockPlugin() {
+		return "mock".equalsIgnoreCase(getPluginName());
+	}
+
+	/** Shared by step-definition classes whose feature doesn't exist under the mock-plugin flow. */
+	public static boolean notApplicableUnderMockPlugin(String featureDescription, Logger callerLogger) {
+		if (isMockPlugin()) {
+			String reason = featureDescription
+					+ " does not exist under this environment's mock-plugin flow - verified live.";
+			callerLogger.info("Not checking (this step only, not the scenario) - " + reason);
+			ExtentReportManager.notApplicable(reason);
+			return true;
+		}
+		return false;
+	}
+
+	// Prefers the local `pluginToExecute` config value (mosipid/mock) to skip the actuator round-trip.
+	// Falls back to actuator-based auto-detection - mirroring eSignet's own api-test getPluginName() -
+	// when the property is unset or holds something other than mosipid/mock. Sunbird RC still counts
+	// as "mock" here (same orchestration as plain mock); use isSunbirdAuthenticatorActive() to
+	// distinguish them - that check queries the actuator directly regardless of this config value.
 	public static String getPluginName() {
 		if (pluginName != null)
 			return pluginName;
+
+		String configuredPlugin = EsignetConfigManager.getProperty("pluginToExecute", "").trim().toLowerCase();
+		if (configuredPlugin.equals("mosipid") || configuredPlugin.equals("mock")) {
+			pluginName = configuredPlugin;
+			return pluginName;
+		}
+		if (!configuredPlugin.isBlank()) {
+			logger.warn("Ignoring pluginToExecute='" + configuredPlugin
+					+ "' - expected 'mosipid' or 'mock'; falling back to actuator auto-detection");
+		}
+
 		String serverAuthenticator = getIdentityPluginNameFromEsignetActuator();
 		// Blank means the actuator didn't answer - fall back to mosipid uncached so the next call retries it.
 		if (serverAuthenticator == null || serverAuthenticator.isBlank()) {
@@ -231,6 +276,34 @@ public class EsignetUtil extends AdminTestUtil {
 				|| serverAuthenticator.toLowerCase().contains("sunbirdrcauthenticationservice");
 		pluginName = isMockLike ? "mock" : "mosipid";
 		return pluginName;
+	}
+
+	private static Boolean captchaEnabled = null;
+
+	// Hides AdminTestUtil.isCaptchaEnabled() (static methods don't override, so an unqualified call
+	// from this class resolves here first) - the inherited version throws NullPointerException when
+	// the actuator can't answer (getValueFromEsignetActuator returns null), which was failing every
+	// single test case via isTestCaseValidForExecution() below on deployments with no working
+	// actuator. Prefers the local `captchaEnabled` config value; falls back to the actuator only when
+	// it's enabled, and otherwise assumes captcha is off rather than crash.
+	public static boolean isCaptchaEnabled() {
+		if (captchaEnabled != null) {
+			return captchaEnabled;
+		}
+
+		String configuredValue = EsignetConfigManager.getProperty("captchaEnabled", "").trim();
+		if (!configuredValue.isEmpty()) {
+			captchaEnabled = parseConfiguredBoolean("captchaEnabled", false);
+			return captchaEnabled;
+		}
+
+		if (!isEsignetActuatorEnabled()) {
+			captchaEnabled = false;
+			return captchaEnabled;
+		}
+
+		captchaEnabled = AdminTestUtil.isCaptchaEnabled();
+		return captchaEnabled;
 	}
 
 	public static JSONArray signupActuatorResponseArray = null;
@@ -353,6 +426,11 @@ public class EsignetUtil extends AdminTestUtil {
 	 * Cached reachability probe for the signup service actuator. The end-to-end registration
 	 * scenario (and every scenario that reuses its phone number) needs this to fail fast with a
 	 * skip rather than an NPE/timeout when signup isn't deployed in the environment.
+	 *
+	 * Confirmed live for this environment two independent ways: this actuator call 404s (no
+	 * signupUrl configured, and Thunder has no Spring actuator at all regardless), AND navigating a
+	 * real browser to https://esignet-go.esqa.mosip.net/signup renders the SPA's own client-side
+	 * "Page Not Found" page. Signup genuinely isn't deployed here, not just unreachable by this check.
 	 */
 	public static boolean isSignupServiceDeployed() {
 		if (signupServiceDeployed == null) {
@@ -777,12 +855,19 @@ public class EsignetUtil extends AdminTestUtil {
 	 * to everything after its first underscore before appending the field name.
 	 */
 	public static String getPrerequisiteRegisteredPhoneNumber() {
-		// Mirrors UINManager's "uin" config short-circuit: a config-supplied number is used as-is
-		// (already expected in local-number format, no country code) and skips the AddIdentity
-		// cache lookup entirely.
-		String configuredPhoneNumber = EsignetConfigManager.getproperty("uinPhoneNumber");
-		if (configuredPhoneNumber != null && !configuredPhoneNumber.isBlank()) {
-			return configuredPhoneNumber.trim();
+		return getPrerequisiteIdentityPhoneForLogin(true);
+	}
+
+	/**
+	 * Phone number for OTP login tied to the AddIdentity prerequisite, optionally honouring the
+	 * {@code uinPhoneNumber} config short-circuit used elsewhere in the suite.
+	 */
+	public static String getPrerequisiteIdentityPhoneForLogin(boolean honourUinPhoneNumberConfig) {
+		if (honourUinPhoneNumberConfig) {
+			String configuredPhoneNumber = EsignetConfigManager.getproperty("uinPhoneNumber");
+			if (configuredPhoneNumber != null && !configuredPhoneNumber.isBlank()) {
+				return configuredPhoneNumber.trim();
+			}
 		}
 
 		boolean isMock = "mock".equalsIgnoreCase(getPluginName());
@@ -812,10 +897,50 @@ public class EsignetUtil extends AdminTestUtil {
 		return getPrerequisiteVidFromConfigOrCache(1, TEMPORARY_VID_CACHE_KEY);
 	}
 
+	public static String getPrerequisiteUin() {
+		String configuredUins = EsignetConfigManager.getproperty("uin");
+		if (configuredUins != null && !configuredUins.isBlank()) {
+			return configuredUins.split(",")[0].trim();
+		}
+		String cachedUin = autoGeneratedIDValueCache.get("AddIdentity_withValidParameters_smoke_Pos_UIN");
+		return cachedUin != null ? cachedUin.trim() : null;
+	}
+
+	public static String getPrerequisiteInfantUin() {
+		String configuredInfantUin = EsignetConfigManager.getproperty("infantUin");
+		if (configuredInfantUin != null && !configuredInfantUin.isBlank()) {
+			return configuredInfantUin.split(",")[0].trim();
+		}
+		String cachedUin = autoGeneratedIDValueCache.get("AddIdentity_Infant_smoke_Pos_UIN");
+		return cachedUin != null ? cachedUin.trim() : null;
+	}
+
+	public static boolean arePrerequisiteUinAvailable() {
+		String uin = getPrerequisiteUin();
+		return uin != null && !uin.isBlank();
+	}
+
 	public static boolean arePrerequisiteVidsAvailable() {
 		String vid1 = getPrerequisitePerpetualVid();
 		String vid2 = getPrerequisiteTemporaryVid();
 		return vid1 != null && !vid1.isBlank() && vid2 != null && !vid2.isBlank();
+	}
+
+	/**
+	 * Reads a component host from {@code mosip_components_base_urls} (e.g. {@code idauthentication}).
+	 */
+	public static String getMosipComponentBaseUrl(String componentName) {
+		String mapping = EsignetConfigManager.getproperty("mosip_components_base_urls");
+		if (mapping == null || mapping.isBlank() || componentName == null || componentName.isBlank()) {
+			return null;
+		}
+		for (String part : mapping.split(";")) {
+			String[] keyValue = part.trim().split("=", 2);
+			if (keyValue.length == 2 && componentName.equalsIgnoreCase(keyValue[0].trim())) {
+				return keyValue[1].trim();
+			}
+		}
+		return null;
 	}
 
 	private static String getPrerequisiteVidFromConfigOrCache(int configIndex, String cacheKey) {
@@ -830,7 +955,10 @@ public class EsignetUtil extends AdminTestUtil {
 		return autoGeneratedIDValueCache.get(cacheKey);
 	}
 
-	private static final Map<String, String> mockIdentityFieldPatternCache = new HashMap<>();
+	// ConcurrentHashMap, not HashMap - mutated via computeIfAbsent() below from a
+	// @DataProvider(parallel = true) context (see runners.Runner#scenarios), so plain HashMap under
+	// concurrent access can corrupt.
+	private static final Map<String, String> mockIdentityFieldPatternCache = new ConcurrentHashMap<>();
 
 	// Extracted via a text search over the raw schema rather than a structured JSON walk with
 	// $ref/allOf resolution, since the mock identity schema's exact nesting/$ref layout isn't
@@ -1222,6 +1350,11 @@ public class EsignetUtil extends AdminTestUtil {
 
 		jsonString = processJWKKey(jsonString, "$OIDC_JWK_KEY_PAR_REQUIRED$", OIDC_JWK_FOR_PAR_REQUIRED);
 
+		jsonString = processClientAssertion(jsonString, "$CLIENT_ASSERTION_PAR_JWT_SECONDARY$",
+				OIDC_JWK_FOR_PAR_SECONDARY);
+
+		jsonString = processJWKKey(jsonString, "$OIDC_JWK_KEY_PAR_SECONDARY$", OIDC_JWK_FOR_PAR_SECONDARY);
+
 		if (jsonString.contains("$ESIGNET_REDIRECT_URI$")) {
 			jsonString = replaceKeywordWithValue(jsonString, "$ESIGNET_REDIRECT_URI$",
 					EsignetConfigManager.getproperty("baseurl") + "userprofile");
@@ -1326,7 +1459,12 @@ public class EsignetUtil extends AdminTestUtil {
 
 	private static JSONObject esignetDiscoveryDocument = null;
 
-	/** The OIDC discovery document, fetched once per run. */
+	/**
+	 * The OIDC discovery document, fetched once per run from the configurable `esignetWellKnownEndPoint`.
+	 * Never throws - some deployments (e.g. the Thunder/eSignet-go build) 500 on this endpoint
+	 * server-side; on any failure this logs a warning and caches an empty JSONObject, so
+	 * isParSupported()/isParRequired() fall back to their own safe defaults (false) below.
+	 */
 	private static synchronized JSONObject getEsignetDiscoveryDocument() {
 		if (esignetDiscoveryDocument != null) {
 			return esignetDiscoveryDocument;
@@ -1337,7 +1475,10 @@ public class EsignetUtil extends AdminTestUtil {
 			Response response = RestClient.getRequest(url, MediaType.APPLICATION_JSON, MediaType.APPLICATION_JSON);
 			esignetDiscoveryDocument = new JSONObject(response.getBody().asString());
 		} catch (Exception e) {
-			throw new RuntimeException("Failed to fetch eSignet discovery document from " + url, e);
+			logger.warn("Could not fetch/parse the eSignet discovery document from " + url
+					+ " - assuming PAR is not supported/required. Check esignetWellKnownEndPoint in config. "
+					+ "Cause: " + e.getMessage());
+			esignetDiscoveryDocument = new JSONObject();
 		}
 		return esignetDiscoveryDocument;
 	}
@@ -1365,10 +1506,44 @@ public class EsignetUtil extends AdminTestUtil {
 		return !"mosipid".equalsIgnoreCase(getPluginName());
 	}
 
+	private static Integer idTokenExpirySeconds = null;
+
+	// Prefers the local `idTokenExpirySeconds` config value to skip the actuator round-trip - some
+	// eSignet deployments (e.g. the Thunder/eSignet-go build) don't expose a Spring actuator at all,
+	// so mosip.esignet.id-token-expire-seconds is never resolvable there. Falls back to the actuator
+	// when the property is unset.
+	public static int getIdTokenExpirySeconds() {
+		if (idTokenExpirySeconds != null) {
+			return idTokenExpirySeconds;
+		}
+
+		String configuredValue = EsignetConfigManager.getProperty("idTokenExpirySeconds", "").trim();
+		if (!configuredValue.isEmpty()) {
+			try {
+				idTokenExpirySeconds = Integer.parseInt(configuredValue);
+				return idTokenExpirySeconds;
+			} catch (NumberFormatException e) {
+				logger.warn("Ignoring idTokenExpirySeconds='" + configuredValue
+						+ "' - not a valid integer; falling back to the eSignet actuator");
+			}
+		}
+
+		String actuatorValue = isEsignetActuatorEnabled()
+				? getValueFromEsignetActuator(EsignetConfigManager.getEsignetActuatorPropertySection(),
+						GlobalConstants.MOSIP_ESIGNET_ID_TOKEN_EXPIRE_SECONDS)
+				: null;
+		if (actuatorValue == null || actuatorValue.isBlank()) {
+			throw new IllegalStateException(
+					"Could not resolve the ID token expiry seconds from config (idTokenExpirySeconds) or the "
+							+ "eSignet actuator (mosip.esignet.id-token-expire-seconds). Set idTokenExpirySeconds "
+							+ "in config.properties for environments without a working eSignet actuator.");
+		}
+		idTokenExpirySeconds = Integer.parseInt(actuatorValue);
+		return idTokenExpirySeconds;
+	}
+
 	public static String signJWKKey(String clientId, RSAKey jwkKey, String tempUrl) {
-		int idTokenExpirySecs = Integer
-				.parseInt(getValueFromEsignetActuator(EsignetConfigManager.getEsignetActuatorPropertySection(),
-						GlobalConstants.MOSIP_ESIGNET_ID_TOKEN_EXPIRE_SECONDS));
+		int idTokenExpirySecs = getIdTokenExpirySeconds();
 		JWSSigner signer;
 
 		try {
@@ -1440,6 +1615,20 @@ public class EsignetUtil extends AdminTestUtil {
 				idKeyName + " value is provided in config, skipping " + testCaseName + " generation test case");
 	}
 
+	public void writeSecondaryConfigValueAndSkipIfProvided(String configKey, String testCaseName, String idKeyName) {
+		String configValue = EsignetConfigManager.getproperty(configKey);
+		if (configValue == null || !configValue.contains(",")) {
+			return;
+		}
+		String secondary = configValue.split(",", 2)[1].trim();
+		if (secondary.isEmpty()) {
+			return;
+		}
+		writeAutoGeneratedId(testCaseName, idKeyName, secondary);
+		throw new SkipException(
+				idKeyName + " secondary value is provided in config, skipping " + testCaseName + " generation test case");
+	}
+
 	/**
 	 * Seeds {@link AdminTestUtil#autoGeneratedIDValueCache} from config.properties so UI scenarios
 	 * can run when prerequisite API calls fail or are skipped (e.g. pre-existing oidcClientId).
@@ -1450,6 +1639,14 @@ public class EsignetUtil extends AdminTestUtil {
 			String clientId = oidcClientId.split(",")[0].trim();
 			autoGeneratedIDValueCache.put("CreateOIDCClient_all_Valid_Smoke_sid_clientId", clientId);
 			logger.info("Seeded preconfigured oidcClientId into autogen cache");
+			if (oidcClientId.contains(",")) {
+				String secondaryClientId = oidcClientId.split(",", 2)[1].trim();
+				if (!secondaryClientId.isEmpty()) {
+					autoGeneratedIDValueCache.put("CreateOIDCClient_secondary_Smoke_sid_clientId",
+							secondaryClientId);
+					logger.info("Seeded preconfigured secondary oidcClientId into autogen cache");
+				}
+			}
 		}
 
 		String configuredUins = EsignetConfigManager.getproperty("uin");
@@ -1458,6 +1655,13 @@ public class EsignetUtil extends AdminTestUtil {
 			autoGeneratedIDValueCache.put("AddIdentity_withValidParameters_smoke_Pos_UIN", uin);
 			autoGeneratedIDValueCache.put("AddIdentity_Vid_Generation_smoke_Pos_UIN", uin);
 			logger.info("Seeded preconfigured uin into autogen cache");
+		}
+
+		String configuredInfantUin = EsignetConfigManager.getproperty("infantUin");
+		if (configuredInfantUin != null && !configuredInfantUin.isBlank()) {
+			autoGeneratedIDValueCache.put("AddIdentity_Infant_smoke_Pos_UIN",
+					configuredInfantUin.split(",")[0].trim());
+			logger.info("Seeded preconfigured infantUin into autogen cache");
 		}
 
 		String configuredVids = EsignetConfigManager.getproperty("vid");
@@ -1483,7 +1687,7 @@ public class EsignetUtil extends AdminTestUtil {
 			if (resolved != null && !resolved.isBlank() && !resolved.contains("$ID:")) {
 				return resolved;
 			}
-		} catch (SkipException e) {
+		} catch (Exception e) {
 			logger.warn("Client ID cache miss for " + clientIdKey + ": " + e.getMessage());
 		}
 
@@ -1491,6 +1695,16 @@ public class EsignetUtil extends AdminTestUtil {
 			String configured = EsignetConfigManager.getproperty("oidcClientId");
 			if (configured != null && !configured.isBlank()) {
 				return configured.split(",")[0].trim();
+			}
+		}
+
+		if (ConsentDbUtil.SECONDARY_CLIENT_ID_KEY.equals(clientIdKey)) {
+			String configured = EsignetConfigManager.getproperty("oidcClientId");
+			if (configured != null && configured.contains(",")) {
+				String secondary = configured.split(",", 2)[1].trim();
+				if (!secondary.isEmpty()) {
+					return secondary;
+				}
 			}
 		}
 
@@ -1550,14 +1764,14 @@ public class EsignetUtil extends AdminTestUtil {
 			// DefinePolicyGroup -> DefinePolicy -> PublishPolicy -> CreatePartner -> UploadCACertificate
 			// -> UploadPartnerCert -> RequestAPIKeyForAuthPartner -> ApproveAPIKey exist solely to feed
 			// OIDCClient's real (mosipid) client creation - nothing else in the suite consumes their
-			// output. If oidcClientId is configured, OIDCClient itself already skips (see
-			// writeConfigValueAndSkipIfProvided in SimplePostForAutoGenId), so running this whole chain
-			// for a client that will never be created is pure waste.
+			// output. Skip this chain only when both primary and secondary OIDC clients are supplied
+			// via config; a lone primary still needs the chain so TC_07 can create the secondary client.
 			String preconfiguredOidcClientId = EsignetConfigManager.getproperty("oidcClientId");
 			if (preconfiguredOidcClientId != null && !preconfiguredOidcClientId.isBlank()
+					&& isSecondaryOidcClientPreconfigured(preconfiguredOidcClientId)
 					&& OIDC_CLIENT_CHAIN_TESTCASE_PREFIXES.stream().anyMatch(modifiedTestCaseName::startsWith)) {
-				throw new SkipException("oidcClientId is provided in config - skipping " + testCaseName
-						+ " (only needed to create a new OIDC client)");
+				throw new SkipException("oidcClientId primary,secondary is provided in config - skipping "
+						+ testCaseName + " (only needed to create new OIDC clients)");
 			}
 		}
 		return testCaseName;
@@ -1570,6 +1784,13 @@ public class EsignetUtil extends AdminTestUtil {
 			"DefinePolicy_", "PublishPolicy_", "PartnerSelfRegistration_", "UploadCACertificate_",
 			"UploadCInterCertificate_", "UploadPartnerCert_", "SubmitPartnerApiKeyRequest_",
 			"ApproveRejectPartnerAPIKeyReq_");
+
+	private static boolean isSecondaryOidcClientPreconfigured(String oidcClientIdConfig) {
+		if (oidcClientIdConfig == null || !oidcClientIdConfig.contains(",")) {
+			return false;
+		}
+		return !oidcClientIdConfig.split(",", 2)[1].trim().isEmpty();
+	}
 
 	public static String getAuthTokenFromKeyCloak(String clientId, String clientSecret) {
 		Map<String, String> params = new HashMap<>();
@@ -1679,7 +1900,7 @@ public class EsignetUtil extends AdminTestUtil {
 			String uiLocales) throws SecurityXSSException, JsonProcessingException {
 
 		String baseUrl = EsignetConfigManager.getproperty("eSignetbaseurl");
-		String parUrl = baseUrl + "/v1/esignet/oauth/par";
+		String parUrl = baseUrl + EsignetConfigManager.getProperty("esignetParEndpoint", "/v1/esignet/oauth/par");
 
 		org.json.simple.JSONObject claimRequest = getRequestJson(CLAIMS_REQUEST);
 		JSONObject requestBody = new JSONObject();
@@ -1751,6 +1972,76 @@ public class EsignetUtil extends AdminTestUtil {
 		return buildDirectAuthorizeUrl(clientId, scope, true, acrValues, uiLocales);
 	}
 
+	public static String generateDirectAuthorizeUrlWithoutPrompt(String clientId) throws SecurityXSSException {
+		String url = generateDirectAuthorizeUrl(clientId);
+		return url.replace("&prompt=" + prompt, "").replace("prompt=" + prompt + "&", "");
+	}
+
+	public static String buildAuthorizeUrlForClientKey(String clientIdKey)
+			throws SecurityXSSException, JsonProcessingException {
+		String baseUrl = EsignetConfigManager.getproperty("eSignetbaseurl");
+		String template = EsignetConfigManager.getproperty("authorizeUrlTemplate");
+		String clientId = resolveClientId(clientIdKey);
+		if (isParRequired()) {
+			String clientAssertion = resolveClientAssertionPlaceholder(clientIdKey);
+			String requestUri = generateParRequestUri(clientIdKey, clientAssertion);
+			return baseUrl + template.replace("$REQUEST_URI$", requestUri).replace("$CLIENT_ID$", clientId);
+		}
+		return generateDirectAuthorizeUrl(clientId);
+	}
+
+	private static String resolveClientAssertionPlaceholder(String clientIdKey) {
+		if (ConsentDbUtil.SECONDARY_CLIENT_ID_KEY.equals(clientIdKey)) {
+			return "$CLIENT_ASSERTION_PAR_JWT_SECONDARY$";
+		}
+		return "$CLIENT_ASSERTION_PAR_JWT$";
+	}
+
+	/**
+	 * Rebuilds and navigates to a fresh /authorize URL so the OAuth linked-transaction clock
+	 * restarts immediately before authentication (OTP or biometrics). Skipped when the URL was
+	 * intentionally tampered for negative InvalidUrl scenarios.
+	 */
+	public static void refreshOAuthAuthorizeSession(WebDriver driver)
+			throws SecurityXSSException, JsonProcessingException {
+		if (driver == null || BasePage.authorizeUrlTampered) {
+			return;
+		}
+		String esignetBase = EsignetConfigManager.getproperty("eSignetbaseurl");
+		String current = driver.getCurrentUrl();
+		if (current == null || esignetBase == null || !current.startsWith(esignetBase)) {
+			return;
+		}
+
+		String freshUrl = buildFreshAuthorizeUrlFromActiveContext();
+		BasePage.authorizeUrl = freshUrl;
+		driver.get(freshUrl);
+		BasePage.markAuthorizeSessionFresh();
+		new WebDriverWait(driver, Duration.ofSeconds(30))
+				.until(ExpectedConditions.urlContains("#"));
+		logger.info("Refreshed OAuth authorize session");
+	}
+
+	public static String buildFreshAuthorizeUrlFromActiveContext()
+			throws SecurityXSSException, JsonProcessingException {
+		String clientIdKey = BasePage.authorizeClientIdKey != null ? BasePage.authorizeClientIdKey
+				: "$ID:CreateOIDCClient_all_Valid_Smoke_sid_clientId$";
+		if (BasePage.parScenario || isParRequired()) {
+			String baseUrl = EsignetConfigManager.getproperty("eSignetbaseurl");
+			String template = EsignetConfigManager.getproperty("authorizeUrlTemplate");
+			String clientAssertion = BasePage.authorizeClientAssertion != null ? BasePage.authorizeClientAssertion
+					: "$CLIENT_ASSERTION_PAR_JWT$";
+			String requestUri = generateParRequestUri(clientIdKey, clientAssertion);
+			String clientId = resolveClientId(clientIdKey);
+			return baseUrl + template.replace("$REQUEST_URI$", requestUri).replace("$CLIENT_ID$", clientId);
+		}
+		String clientId = resolveClientId(clientIdKey);
+		if (BasePage.authorizeScopeOnlyScenario) {
+			return generateDirectAuthorizeUrlWithoutClaims(clientId, AUTHORIZE_SCOPE_ONLY);
+		}
+		return generateDirectAuthorizeUrl(clientId);
+	}
+
 	public static String generateDirectAuthorizeUrlWithoutClaims(String clientId, String customScope)
 			throws SecurityXSSException {
 		return buildDirectAuthorizeUrl(clientId, customScope, false, DEFAULT_ACR_VALUES, null);
@@ -1764,7 +2055,8 @@ public class EsignetUtil extends AdminTestUtil {
 		String nonce = String.valueOf(Calendar.getInstance().getTimeInMillis());
 
 		Charset utf8 = StandardCharsets.UTF_8;
-		StringBuilder url = new StringBuilder(baseUrl + "/authorize?");
+		StringBuilder url = new StringBuilder(
+				baseUrl + EsignetConfigManager.getProperty("esignetAuthorizeEndpoint", "/authorize") + "?");
 		url.append("client_id=").append(URLEncoder.encode(clientId, utf8));
 		url.append("&response_type=").append(responseType);
 		url.append("&scope=").append(URLEncoder.encode(requestedScope, utf8));
@@ -1789,17 +2081,50 @@ public class EsignetUtil extends AdminTestUtil {
 	// the two colliding.
 	private static String serverAuthenticatorPluginName = null;
 
+	private static Boolean esignetActuatorEnabled = null;
+
+	/** Single boolean-config-flag convention for this file: only "true" (case-insensitive) is truthy. */
+	private static boolean parseConfiguredBoolean(String key, boolean defaultWhenBlank) {
+		String value = EsignetConfigManager.getProperty(key, "").trim();
+		return value.isEmpty() ? defaultWhenBlank : Boolean.parseBoolean(value);
+	}
+
+	// Single gate in front of every eSignet actuator/env call in this module (getPluginName()'s own
+	// fallback, isSunbirdAuthenticatorActive(), and any other caller of
+	// getIdentityPluginNameFromEsignetActuator()). Set esignetActuatorEnabled=false in config for
+	// deployments (e.g. the Thunder/eSignet-go build) that don't expose a Spring actuator at all -
+	// actuator/env 404s there on every call, so there's nothing useful to retry.
+	public static boolean isEsignetActuatorEnabled() {
+		if (esignetActuatorEnabled == null) {
+			esignetActuatorEnabled = parseConfiguredBoolean("esignetActuatorEnabled", true);
+		}
+		return esignetActuatorEnabled;
+	}
+
 	public static String getIdentityPluginNameFromEsignetActuator() {
 		if (serverAuthenticatorPluginName != null && !serverAuthenticatorPluginName.isBlank()) {
 			return serverAuthenticatorPluginName;
+		}
+		if (!isEsignetActuatorEnabled()) {
+			return null;
 		}
 		serverAuthenticatorPluginName = getValueFromEsignetActuator(ESignetConstants.CLASS_PATH_APPLICATION_PROPERTIES,
 				"mosip.esignet.integration.authenticator");
 		return serverAuthenticatorPluginName;
 	}
 
-	/** Whether the eSignet server's actual identity authenticator is Sunbird RC (server-side only). */
+	/**
+	 * Whether the eSignet server's actual identity authenticator is Sunbird RC (server-side only).
+	 * Prefers the local `sunbirdAuthenticatorActive` config override (true/false) to skip the
+	 * actuator round-trip - needed for deployments with no actuator (esignetActuatorEnabled=false),
+	 * where the actuator-only detection below always reports false regardless of the real server.
+	 */
 	public static boolean isSunbirdAuthenticatorActive() {
+		String configuredValue = EsignetConfigManager.getProperty("sunbirdAuthenticatorActive", "").trim();
+		if (!configuredValue.isEmpty()) {
+			return parseConfiguredBoolean("sunbirdAuthenticatorActive", false);
+		}
+
 		String serverPlugin = getIdentityPluginNameFromEsignetActuator();
 		return serverPlugin != null && serverPlugin.toLowerCase().contains("sunbirdrcauthenticationservice");
 	}
@@ -1807,7 +2132,7 @@ public class EsignetUtil extends AdminTestUtil {
 	public static String generateParRequestWithoutNonceAndState() throws SecurityXSSException, JsonProcessingException {
 
 		String baseUrl = EsignetConfigManager.getproperty("eSignetbaseurl");
-		String parUrl = baseUrl + "/v1/esignet/oauth/par";
+		String parUrl = baseUrl + EsignetConfigManager.getProperty("esignetParEndpoint", "/v1/esignet/oauth/par");
 
 		org.json.simple.JSONObject claimRequest = getRequestJson(CLAIMS_REQUEST);
 		JSONObject requestBody = new JSONObject();
@@ -1842,6 +2167,56 @@ public class EsignetUtil extends AdminTestUtil {
 		}
 
 		return responseJson.getString("request_uri");
+	}
+
+	/**
+	 * Builds an authorize URL without {@code nonce} and {@code state}, matching the InvalidUrl
+	 * scenario's "remove nonce and state" step. Uses the direct flow when PAR is not mandated so a
+	 * preconfigured {@code oidcClientId} works without a matching PAR client assertion JWK.
+	 */
+	public static String generateAuthorizeUrlWithoutNonceAndState()
+			throws SecurityXSSException, JsonProcessingException {
+		String clientIdKey = "$ID:CreateOIDCClient_all_Valid_Smoke_sid_clientId$";
+		String clientId = resolveClientId(clientIdKey);
+		if (isParRequired()) {
+			String baseUrl = EsignetConfigManager.getproperty("eSignetbaseurl");
+			String template = EsignetConfigManager.getproperty("authorizeUrlTemplate");
+			String requestUri = generateParRequestWithoutNonceAndState();
+			return baseUrl + template.replace("$REQUEST_URI$", requestUri).replace("$CLIENT_ID$", clientId);
+		}
+		return removeQueryParams(generateDirectAuthorizeUrl(clientId), "nonce", "state");
+	}
+
+	public static String removeQueryParams(String url, String... paramNames) {
+		if (url == null || paramNames == null || paramNames.length == 0) {
+			return url;
+		}
+		java.util.Set<String> toRemove = java.util.Set.of(paramNames);
+		int queryStart = url.indexOf('?');
+		if (queryStart < 0) {
+			return url;
+		}
+		String base = url.substring(0, queryStart);
+		String query = url.substring(queryStart + 1);
+		String fragment = "";
+		int hashIndex = query.indexOf('#');
+		if (hashIndex >= 0) {
+			fragment = query.substring(hashIndex);
+			query = query.substring(0, hashIndex);
+		}
+		String rebuilt = java.util.Arrays.stream(query.split("&"))
+				.filter(part -> !part.isBlank())
+				.filter(part -> {
+					int eq = part.indexOf('=');
+					String name = eq >= 0 ? part.substring(0, eq) : part;
+					return !toRemove.contains(name);
+				})
+				.reduce((a, b) -> a + "&" + b)
+				.orElse("");
+		if (rebuilt.isEmpty()) {
+			return base + fragment;
+		}
+		return base + "?" + rebuilt + fragment;
 	}
 
 	/* ======================= DYNAMIC MOCK IDENTITY REQUEST GENERATION =======================
@@ -1889,8 +2264,33 @@ public class EsignetUtil extends AdminTestUtil {
 		return AdminTestUtil.generateDynamicRequestFromSchema(schemaStr, testCaseName, MOCK_IDENTITY_VALUE_MAP);
 	}
 
+	// Overrides (rather than delegates to) AdminTestUtil#extractAndStoreIdentityDetailsFromRequest -
+	// that inherited version also extracts and persists "password" via writeAutoGeneratedId(...,
+	// "PASSWORD", ...), but nothing in this suite consumes a PASSWORD generated-ID key, so persisting a
+	// plaintext password to the generated-ID properties file is unnecessary risk. individualId/email/
+	// phone extraction is unchanged.
 	public void extractAndStoreMockIdentityDetails(String testCaseName, String requestBody) {
-		extractAndStoreIdentityDetailsFromRequest(testCaseName, requestBody);
+		try {
+			JSONObject root = new JSONObject(requestBody);
+			JSONObject request = root.has(GlobalConstants.REQUEST) ? root.getJSONObject(GlobalConstants.REQUEST)
+					: root;
+
+			String individualId = request.optString("individualId", null);
+			String email = request.optString("email", null);
+			String phone = request.optString("phone", null);
+
+			if (individualId != null && !individualId.isEmpty()) {
+				writeAutoGeneratedId(testCaseName, "UIN", individualId);
+			}
+			if (email != null && !email.isEmpty()) {
+				writeAutoGeneratedId(testCaseName, "EMAIL", email);
+			}
+			if (phone != null && !phone.isEmpty()) {
+				writeAutoGeneratedId(testCaseName, "PHONE", phone);
+			}
+		} catch (Exception e) {
+			throw new RuntimeException("Failed to extract identity details from request", e);
+		}
 	}
 
 	public static String getIdentifierFieldId() {

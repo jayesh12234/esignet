@@ -134,6 +134,34 @@ public class BaseTestUtil {
 		return new RemoteWebDriver(remoteUrl, caps);
 	}
 
+	// CSS viewport width/height, device scale factor, and a matching user agent for known device
+	// names, keyed lower-case. Add entries here as new `mobileDevice` config values are needed.
+	private static final Map<String, Object[]> MOBILE_DEVICE_PROFILES = new HashMap<>();
+	static {
+		MOBILE_DEVICE_PROFILES.put("pixel 5", new Object[] { 393, 851, 2.75,
+				"Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) "
+						+ "Chrome/126.0.0.0 Mobile Safari/537.36" });
+	}
+
+	private static Map<String, Object> buildMobileEmulationSettings(String deviceName) {
+		Object[] profile = MOBILE_DEVICE_PROFILES.get(deviceName == null ? "" : deviceName.trim().toLowerCase());
+		if (profile == null) {
+			LOGGER.warning("No deviceMetrics profile for mobileDevice='" + deviceName
+					+ "' - falling back to the Pixel 5 profile. Add an entry to MOBILE_DEVICE_PROFILES for it.");
+			profile = MOBILE_DEVICE_PROFILES.get("pixel 5");
+		}
+
+		Map<String, Object> deviceMetrics = new HashMap<>();
+		deviceMetrics.put("width", profile[0]);
+		deviceMetrics.put("height", profile[1]);
+		deviceMetrics.put("pixelRatio", profile[2]);
+
+		Map<String, Object> mobileEmulation = new HashMap<>();
+		mobileEmulation.put("deviceMetrics", deviceMetrics);
+		mobileEmulation.put("userAgent", profile[3]);
+		return mobileEmulation;
+	}
+
 	public static WebDriver getLocalWebDriverInstance(String browser, boolean isMobile, String deviceName)
 			throws IOException {
 		browser = browser.toLowerCase();
@@ -177,11 +205,12 @@ public class BaseTestUtil {
 			prefs.put("profile", profile);
 			chromeOptions.setExperimentalOption("prefs", prefs);
 
-			// Enable mobile emulation if requested
+			// Enable mobile emulation if requested. Uses explicit deviceMetrics/userAgent rather than
+			// ChromeDriver's built-in deviceName presets - that list is Chrome-version-dependent and
+			// has dropped/renamed entries across releases (e.g. "Pixel 5" is gone as of Chrome 151),
+			// causing "must be a valid device" errors. Explicit metrics work on any Chrome version.
 			if (isMobile) {
-				Map<String, String> mobileEmulation = new HashMap<>();
-				mobileEmulation.put("deviceName", deviceName);
-				chromeOptions.setExperimentalOption("mobileEmulation", mobileEmulation);
+				chromeOptions.setExperimentalOption("mobileEmulation", buildMobileEmulationSettings(deviceName));
 			}
 
 			// Always set headless flags if needed
@@ -276,20 +305,47 @@ public class BaseTestUtil {
 
 	private static void applyBrowserLocale(ChromeOptions chromeOptions, FirefoxOptions firefoxOptions,
 			EdgeOptions edgeOptions) {
+		// Neutral locale is applied via Page.addScriptToEvaluateOnNewDocument in
+		// applyLocaleOverrideViaCdp — do not pass --lang=xx here because Chrome persists it
+		// into i18nextLng and breaks DEFAULT_LANG fallback assertions (MOSIP-24002 TC_14).
+		if (firefoxOptions != null) {
+			String locale = LanguageUtil.getNeutralBrowserLocale();
+			if (locale != null && !locale.isBlank()) {
+				firefoxOptions.addPreference("intl.accept_languages", locale);
+				LOGGER.info("Browser locale configured to: " + locale);
+			}
+		}
+	}
+
+	/**
+	 * Spoofs {@code navigator.language} on every new document without changing Accept-Language or
+	 * i18next cookies (MOSIP-24002 TC_14). {@code Emulation.setLocaleOverride} alone stores {@code xx}
+	 * in {@code i18nextLng}; script injection only affects the navigator probe the IDP reads first.
+	 */
+	public static void applyLocaleOverrideViaCdp(WebDriver driver) {
 		String locale = LanguageUtil.getNeutralBrowserLocale();
-		if (locale == null || locale.isBlank()) {
+		if (locale == null || locale.isBlank() || driver == null) {
 			return;
 		}
-		if (chromeOptions != null) {
-			chromeOptions.addArguments("--lang=" + locale);
+		String escaped = locale.replace("\\", "\\\\").replace("'", "\\'");
+		String script = "Object.defineProperty(navigator, 'language', {get: function() { return '"
+				+ escaped + "'; }});"
+				+ "Object.defineProperty(navigator, 'languages', {get: function() { return ['" + escaped + "']; }});";
+		try {
+			if (driver instanceof ChromeDriver chromeDriver) {
+				Map<String, Object> params = new HashMap<>();
+				params.put("source", script);
+				chromeDriver.executeCdpCommand("Page.addScriptToEvaluateOnNewDocument", params);
+				LOGGER.info("Chrome navigator.language spoof applied: " + locale);
+			} else if (driver instanceof EdgeDriver edgeDriver) {
+				Map<String, Object> params = new HashMap<>();
+				params.put("source", script);
+				edgeDriver.executeCdpCommand("Page.addScriptToEvaluateOnNewDocument", params);
+				LOGGER.info("Edge navigator.language spoof applied: " + locale);
+			}
+		} catch (Exception e) {
+			LOGGER.warning("Could not apply navigator.language spoof: " + e.getMessage());
 		}
-		if (firefoxOptions != null) {
-			firefoxOptions.addPreference("intl.accept_languages", locale);
-		}
-		if (edgeOptions != null) {
-			edgeOptions.addArguments("--lang=" + locale);
-		}
-		LOGGER.info("Browser locale configured to: " + locale);
 	}
 
 }

@@ -246,8 +246,10 @@ OIDCClientV3:
       "clientNameLang": "MOSIP OIDC Client",
       "userinfo_response_type": "JWS",
       "purpose_title": null,
+      "purpose_title_is_null": true,
       "purpose_type": "login",
       "purpose_subTitle": null,
+      "purpose_subTitle_is_null": true,
       "signup_banner_required": true,
       "forgot_pwd_link_required": true,
       "consent_expire_in_mins": "30"
@@ -322,6 +324,43 @@ OIDCClientV3:
 	  "purpose_title": "Login using eSignet",
 	  "purpose_type": "login",
 	  "purpose_subTitle": "{{clientName}} is requesting authentication for login",
+      "signup_banner_required": true,
+      "forgot_pwd_link_required": true,
+      "consent_expire_in_mins": "30"
+}'
+    output: '{
+      "status": "ACTIVE"
+}'
+  ESignetUI_CreateOIDCClient_secondary_Smoke_sid:
+    endPoint: /v1/esignet/client-mgmt/client
+    uniqueIdentifier: TC_ESignet_OIDCClientV3_11
+    description: Create secondary OIDC client for the same relying party (consent registry TC_07)
+    role: partner
+    restMethod: post
+    inputTemplate: esignetUI/CreateClientMock/CreateOIDCClient
+    outputTemplate: esignetUI/CreateClientMock/CreateOIDCClientResult
+    input: '{
+      "requestTime": "$TIMESTAMP$",
+      "clientId": "$RANDOMPARTNERID$",
+      "clientName": "MOSIP OIDC Client Secondary",
+      "logoUri": "https://health-services.com/logo.png",
+      "relyingPartyId": "Bharathi-Inc",
+      "redirectUris": "$ESIGNET_REDIRECT_URI$",
+      "publicKey": "$OIDC_JWK_KEY_PAR_SECONDARY$",
+      "userClaims1": "name",
+      "userClaims2": "email",
+      "userClaims3": "gender",
+      "userClaims4": "phone_number",
+      "userClaims5": "birthdate",
+      "authContextRefs": [{"acrValues": "mosip:idp:acr:static-code"},{"acrValues": "mosip:idp:acr:generated-code"},{"acrValues": "mosip:idp:acr:biometrics"},{"acrValues": "mosip:idp:acr:linked-wallet"},{"acrValues": "mosip:idp:acr:password"}],
+      "grantTypes": "authorization_code",
+      "clientAuthMethods": "private_key_jwt",
+      "keyLang1": "$1STLANG$",
+      "clientNameLang": "MOSIP OIDC Client Secondary",
+      "userinfo_response_type": "JWS",
+      "purpose_title": "Verify using eSignet",
+      "purpose_type": "verify",
+      "purpose_subTitle": "{{clientName}} is requesting authentication for verification",
       "signup_banner_required": true,
       "forgot_pwd_link_required": true,
       "consent_expire_in_mins": "30"

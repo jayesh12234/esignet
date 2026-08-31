@@ -40,6 +40,11 @@ public class SignupFormDynamicFiller {
 				continue;
 			}
 
+			if (!fieldId.matches("[A-Za-z0-9_.-]+")) {
+				logger.info("Skipping fieldId with unsupported characters for XPath lookup: " + fieldId);
+				continue;
+			}
+
 			// id/data-field-id may be on the input/select/textarea itself, or on a wrapper
 			// element around it - match either shape rather than assuming one or the other.
 			List<WebElement> matchingElements = driver.findElements(By.xpath(
@@ -188,7 +193,11 @@ public class SignupFormDynamicFiller {
 		for (WebElement option : options) {
 			String text = option.getText();
 			String value = option.getAttribute("value");
-			if ((text != null && text.toLowerCase().contains("eng")) || (value != null && value.toLowerCase().contains("eng"))) {
+			String normalizedText = text != null ? text.trim().toLowerCase() : "";
+			String normalizedValue = value != null ? value.trim().toLowerCase() : "";
+			boolean isEnglish = normalizedText.equals("english") || normalizedText.equals("en")
+					|| normalizedText.equals("eng") || normalizedValue.equals("en") || normalizedValue.equals("eng");
+			if (isEnglish) {
 				dropdown.selectByVisibleText(text);
 				return true;
 			}

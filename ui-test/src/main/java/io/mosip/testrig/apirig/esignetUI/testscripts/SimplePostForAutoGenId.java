@@ -117,6 +117,10 @@ public class SimplePostForAutoGenId extends EsignetUtil implements ITest {
 			writeConfigValueAndSkipIfProvided("oidcClientId", testCaseName, idKeyName);
 		}
 
+		if ("clientId".equals(idKeyName) && testCaseName.contains("CreateOIDCClient_secondary_Smoke_sid")) {
+			writeSecondaryConfigValueAndSkipIfProvided("oidcClientId", testCaseName, idKeyName);
+		}
+
 		String inputJson = getJsonFromTemplate(testCaseDTO.getInput(), testCaseDTO.getInputTemplate());
 
 		if (testCaseName.contains(ESignetConstants.ESIGNET_STRING)) {
@@ -149,6 +153,17 @@ public class SimplePostForAutoGenId extends EsignetUtil implements ITest {
 						response = EsignetUtil.postWithBodyAndBearerToken(tempUrl + testCaseDTO.getEndPoint(), inputJson,
 								COOKIENAME, testCaseDTO.getRole(), testCaseDTO.getTestCaseName(), idKeyName);
 						if (response != null && !response.asString().contains("UNSUCCESSFUL")) {
+							break;
+						}
+						// Only an explicit "UNSUCCESSFUL" body is safe to retry: it confirms nothing was
+						// created. A null response means the outcome is unknown - Sunbird RC may already
+						// have accepted it. Neither this codebase nor Sunbird RC's API exposes a
+						// deterministic policy id or idempotency key, and the postrequisite delete stores a
+						// single osid, so a duplicate record would be undeletable. Stop instead of retrying.
+						if (response == null) {
+							logger.error(testCaseName + ": Sunbird RC create returned no response - the policy may or "
+									+ "may not exist. Not retrying, to avoid an undeletable duplicate record. "
+									+ "Verify the registry manually.");
 							break;
 						}
 						currLoopCount++;
@@ -194,6 +209,10 @@ public class SimplePostForAutoGenId extends EsignetUtil implements ITest {
 					sendEsignetToken);
 		}
 
+		if (response == null) {
+			throw new AdminTestException(testCaseName + ": request failed with no response after all attempts");
+		}
+
 		Map<String, List<OutputValidationDto>> outputValid = null;
 		if (testCaseName.contains("_StatusCode")) {
 
@@ -235,6 +254,6 @@ public class SimplePostForAutoGenId extends EsignetUtil implements ITest {
 	 */
 	@AfterMethod(alwaysRun = true)
 	public void setResultTestName(ITestResult result) {
-		result.setAttribute("TestCaseName", testCaseName);
+		result.setTestName(testCaseName);
 	}
 }

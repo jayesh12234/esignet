@@ -124,6 +124,7 @@ public final class MockMdsManager {
 	 */
 	public static void warmIdaFirCertificate() {
 		try {
+			org.biometric.provider.JwtUtility.clearIdaCertificateCache();
 			String certificate = new org.biometric.provider.JwtUtility().getCertificateFromIDA();
 			if (certificate != null && !certificate.isBlank()) {
 				LOGGER.info("Pre-warmed IDA FIR certificate for Mock MDS Auth capture");

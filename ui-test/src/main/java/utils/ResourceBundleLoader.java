@@ -25,9 +25,13 @@ public class ResourceBundleLoader {
 		if (!loaded || !currentLang.equalsIgnoreCase(loadedLanguage)) {
 			synchronized (ResourceBundleLoader.class) {
 				if (!loaded || !currentLang.equalsIgnoreCase(loadedLanguage)) {
-					loadResourceBundleJson(currentLang);
-					loaded = true;
-					loadedLanguage = currentLang;
+					// Only cache the load as done when it actually succeeded - otherwise a failed load
+					// (e.g. a transient network error) gets cached as if it succeeded, and later lookups
+					// would never retry.
+					if (loadResourceBundleJson(currentLang)) {
+						loaded = true;
+						loadedLanguage = currentLang;
+					}
 				}
 			}
 		}
@@ -39,7 +43,7 @@ public class ResourceBundleLoader {
 		return bundle.getOrDefault(key, "!!MISSING_KEY: " + key + "!!");
 	}
 
-	private static void loadResourceBundleJson(String currentLang) {
+	private static boolean loadResourceBundleJson(String currentLang) {
 		try {
 			resourceBundleMap.clear();
 			String twoLetterCode = LanguageUtil.getIsoLanguageCode(currentLang);
@@ -47,21 +51,44 @@ public class ResourceBundleLoader {
 				logger.warn("No ISO mapping found for language: " + currentLang + ", falling back to: " + currentLang);
 				twoLetterCode = currentLang;
 			}
-			resourceBundleMap.putAll(loadResourceBundleForIsoCode(twoLetterCode));
+			Map<String, String> bundle = loadResourceBundleForIsoCode(twoLetterCode);
+			if (bundle.isEmpty()) {
+				logger.warn("Resource bundle for language: " + currentLang + " loaded empty - not caching as loaded");
+				return false;
+			}
+			resourceBundleMap.putAll(bundle);
 			logger.info("Loaded resource bundle for language: " + currentLang);
+			return true;
 		} catch (Exception e) {
 			logger.error("Error loading resource bundle JSON for lang: " + currentLang, e);
+			return false;
 		}
 	}
 
+	@SuppressWarnings("unchecked")
 	private static Map<String, String> loadResourceBundleForIsoCode(String isoCode) {
 		Map<String, String> bundle = new HashMap<>();
 		try {
-			String url = EsignetConfigManager.getproperty("eSignetbaseurl") + "/locales/" + isoCode + ".json";
+			// esignet-go doesn't serve /locales/<iso>.json as a static file (SPA catch-all, not real
+			// translations) - the real catalog (1261 keys, verified) is embedded under
+			// response.i18n.translations of this flow-metadata endpoint instead, keyed by the same
+			// 2-letter codes ("en", "km", "hi", ...). No auth/challenge-token needed, unlike
+			// /v1/esignet/flow/execute. Note the new catalog uses a different key taxonomy than the
+			// classic eSignet UI's (e.g. no "otp.link_using_id"), so lookups for old keys may still
+			// come back missing even though the fetch itself now succeeds.
+			String clientId = EsignetConfigManager.getproperty("oidcClientId");
+			String url = EsignetConfigManager.getproperty("eSignetbaseurl")
+					+ "/v1/esignet/flow/meta?id=" + clientId + "&type=APP&language=" + isoCode;
 			String jsonContent = downloadJson(url);
-			Map<String, Object> nestedMap = new ObjectMapper().readValue(jsonContent, new TypeReference<>() {
+			Map<String, Object> response = new ObjectMapper().readValue(jsonContent, new TypeReference<>() {
 			});
-			flatten(nestedMap, "", bundle);
+			Object i18n = response.get("i18n");
+			Object translations = i18n instanceof Map ? ((Map<String, Object>) i18n).get("translations") : null;
+			if (translations instanceof Map) {
+				flatten((Map<String, Object>) translations, "", bundle);
+			} else {
+				logger.warn("flow/meta response for language '" + isoCode + "' had no i18n.translations object");
+			}
 			logger.info("Loaded resource bundle for ISO code: " + isoCode);
 		} catch (Exception e) {
 			logger.error("Error loading resource bundle JSON for ISO code: " + isoCode, e);

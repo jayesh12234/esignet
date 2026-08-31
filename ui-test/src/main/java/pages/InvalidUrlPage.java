@@ -16,14 +16,23 @@ public class InvalidUrlPage extends BasePage {
 		super(driver);
 	}
 
-	@FindBy(xpath = "//div[@class='p-2 mt-1 mb-1 w-full text-center text-sm rounded-lg text-red-700 bg-red-100 undefined']")
+	// Verified live (full-page DOM capture after hash-tampering): esignet-go shows the SAME generic
+	// error page as the nonce-tampering case (see unauthorizedErrorHeading below) - a div.error-page-header
+	// ("Something went wrong (401)") plus a div.error-page-detail ("An unexpected error occurred.
+	// Please try again later."), not a standalone "unable to process" message with the old Tailwind
+	// classes, which don't exist here. The detail line is the one whose text actually changes on
+	// language switch (checked via isErrorMsgLanguageChanged), matching its "please try again" framing.
+	@FindBy(xpath = "//div[@class='error-page-detail']")
 	WebElement unableToProcessErrorMsg;
 
 	@FindBy(id = "language_dropdown")
 	WebElement languageDropdownInErrorPage;
 
-	@FindBy(id = "signup-url-button")
-	WebElement signupUrlButton;
+	// esignet-go has no "signup-url-button" - the language switcher (verified nav element, no id, only
+	// aria-haspopup="listbox") renders on every real esignet UI screen, so its presence is the generic
+	// "we're still on a real esignet page, not an error page" signal.
+	@FindBy(css = "nav button[aria-haspopup='listbox']")
+	WebElement languageSwitcherNav;
 
 	@FindBy(xpath = "//div[@class='error-page-header']")
 	WebElement pageDoesNotExistErrorMsg;
@@ -58,7 +67,7 @@ public class InvalidUrlPage extends BasePage {
 	}
 
 	public boolean isEsignetPageRetained() {
-		return isElementVisible(signupUrlButton, "Verified esignet page is retained");
+		return isElementVisible(languageSwitcherNav, "Verified esignet page is retained");
 	}
 
 	public boolean isPageDoesNotExistErrorMsgDisplayed() {
@@ -84,6 +93,13 @@ public class InvalidUrlPage extends BasePage {
 
 	public boolean isSomethingWentWrongErrorDisplayed() {
 		return isElementVisible(somethingWentWrongErrorMsg, "Verified something went wrong error screen is displayed");
+	}
+
+	// Both the "unauthorized" and "page does not exist" error types render the same generic
+	// div.error-page-header container - verified live - so this documents that intentionally rather
+	// than pretending to distinguish them with a second, identically-located field.
+	public boolean isUnauthorizedErrorDisplayed() {
+		return isPageDoesNotExistErrorMsgDisplayed();
 	}
 
 	public boolean isAttentionScreenDisplayed() {

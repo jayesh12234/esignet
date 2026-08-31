@@ -43,8 +43,8 @@ public class KbiPage extends BasePage {
 		return !driver.findElements(fieldInputLocator(fieldId)).isEmpty();
 	}
 
-	/** Visible label for a field, or "" if none found. */
-	public String getFieldLabel(String fieldId) {
+	/** Resolves the field's label element via three fallback strategies, or null if none found. */
+	private WebElement findLabel(String fieldId) {
 		List<By> labelLocators = List.of(
 				By.xpath("//label[@for='" + fieldId + "']"),
 				By.xpath("//*[@id='" + fieldId + "']/ancestor::*[self::div or self::label][1]//label"),
@@ -53,20 +53,23 @@ public class KbiPage extends BasePage {
 		for (By by : labelLocators) {
 			List<WebElement> els = driver.findElements(by);
 			if (!els.isEmpty()) {
-				String text = textExcludingRequiredMarker(els.get(0));
-				if (!text.isEmpty()) {
-					return text;
-				}
+				return els.get(0);
 			}
 		}
-		return "";
+		return null;
+	}
+
+	/** Visible label for a field, or "" if none found. */
+	public String getFieldLabel(String fieldId) {
+		WebElement label = findLabel(fieldId);
+		return label != null ? textExcludingRequiredMarker(label) : "";
 	}
 
 	// Strips the nested "*" required-marker span so it doesn't get included in the label text.
 	private String textExcludingRequiredMarker(WebElement label) {
 		Object result = ((JavascriptExecutor) driver).executeScript(
 				"var el = arguments[0].cloneNode(true);"
-						+ "el.querySelectorAll('.required').forEach(function(n){ n.remove(); });"
+						+ "el.querySelectorAll('[class*=\"required\"]').forEach(function(n){ n.remove(); });"
 						+ "return el.textContent;",
 				label);
 		return result != null ? result.toString().trim() : "";
@@ -187,8 +190,11 @@ public class KbiPage extends BasePage {
 
 	/** Whether a field's label shows the visible required-marker (the "*" span). */
 	public boolean isFieldMarkedRequired(String fieldId) {
-		List<WebElement> req = driver
-				.findElements(By.xpath("//label[@for='" + fieldId + "']//span[contains(@class,'required')]"));
+		WebElement label = findLabel(fieldId);
+		if (label == null) {
+			return false;
+		}
+		List<WebElement> req = label.findElements(By.xpath(".//span[contains(@class,'required')]"));
 		return !req.isEmpty() && req.get(0).isDisplayed();
 	}
 
@@ -199,8 +205,13 @@ public class KbiPage extends BasePage {
 	}
 
 	public void setOffline(boolean offline) {
+		if (!offline) {
+			// Properly clears emulation state rather than applying an "online" emulation profile.
+			((ChromiumDriver) driver).deleteNetworkConditions();
+			return;
+		}
 		ChromiumNetworkConditions conditions = new ChromiumNetworkConditions();
-		conditions.setOffline(offline);
+		conditions.setOffline(true);
 		((ChromiumDriver) driver).setNetworkConditions(conditions);
 	}
 

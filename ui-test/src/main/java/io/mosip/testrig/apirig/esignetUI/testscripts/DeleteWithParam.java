@@ -69,6 +69,10 @@ public class DeleteWithParam extends EsignetUtil implements ITest {
 						"Skipped: " + testCaseName + " requires the Sunbird RC authenticator to be active on the server");
 			}
 			tempUrl = EsignetConfigManager.getSunBirdBaseURL();
+			if (tempUrl == null || tempUrl.isBlank()) {
+				throw new SkipException(
+						"Skipped: " + testCaseName + " - sunBirdBaseURL is not configured");
+			}
 			testCaseDTO.setEndPoint(testCaseDTO.getEndPoint().replace("$SUNBIRDBASEURL$", ""));
 		}
 

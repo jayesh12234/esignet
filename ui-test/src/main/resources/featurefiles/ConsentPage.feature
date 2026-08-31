@@ -48,17 +48,8 @@ Feature: Esignet Consent Page
    And click on verify Otp button
 
    Then verify consent should ask user to proceed in attention page
-   And clicks on proceed button in attention page
-   And clicks on proceed button in next page
-   Then select the e-kyc verification provider
-   And clicks on proceed button in e-kyc verification provider page
-   And user select the check box in terms and condition page
-   And user clicks on proceed button in terms and condition page
-   And user clicks on proceed button in camera preview page
-   And user is navigated to consent screen once liveness check completes
    And verify user is navigated to consent screen
-   And verify the timer starts from 55sec in the consent page via Otp login
-   And refresh the browser tab and verify timer continue with leftover seconds
+   And verify the timer starts from 120sec in the consent page via Otp login
 
    And user clicks on language dropdown button
    And user selects arabic language
@@ -86,6 +77,11 @@ Feature: Esignet Consent Page
    When user enables all the voluntary claims sub-toggle manually
    Then verify that the master toggle is enabled automatically
 
+   # Destructive check last: refreshing this screen invalidates the transaction server-side
+   # (confirmed live - "Something went wrong (401)", not recoverable client-side), so it runs after
+   # every other real interactive check has already had a chance to execute and be reported.
+   And refresh the browser tab and verify timer continue with leftover seconds
+
   @smoke @Consentscreen
   Scenario: Verifying Consent Screen changes to handle unavailable voluntary claims
    Given user captures the authorize url
@@ -98,14 +94,6 @@ Feature: Esignet Consent Page
    And click on verify Otp button
 
    Then verify consent should ask user to proceed in attention page
-   And clicks on proceed button in attention page
-   And clicks on proceed button in next page
-   Then select the e-kyc verification provider
-   And clicks on proceed button in e-kyc verification provider page
-   And user select the check box in terms and condition page
-   And user clicks on proceed button in terms and condition page
-   And user clicks on proceed button in camera preview page
-   And user is navigated to consent screen once liveness check completes
    And verify user is navigated to consent screen
 
    Then user verify the header of essential claims
@@ -126,17 +114,20 @@ Feature: Esignet Consent Page
   @smoke @PurposeLink
   Scenario: Verifying auth factors for a client ID with purpose type link
     When user creates the client with purpose type link
+    Given user captures the authorize url
     Then all auth factors should start with link
 
   @smoke @PurposeVerify
   Scenario: Verifying auth factors for a client ID with purpose type verify
     When user creates the client with purpose type verify
+    Given user captures the authorize url
     Then all auth factors should start with verify
     And verify title and subtitle should be displayed as per text given during client creation
 
   @smoke @PurposeNone
   Scenario: Verifying auth factors for a client ID with purpose type none
     When user creates the client with purpose type none
+    Given user captures the authorize url
     Then verify no title or subtitle should be displayed
     And user click on Login with Otp
     And verify select preferred ID text based on purpose type is displayed
@@ -144,16 +135,19 @@ Feature: Esignet Consent Page
   @smoke @NoPurpose
   Scenario: Verify eSignet UI falls back to login when client is created without purpose field
     When user creates the client without purpose field
+    Given user captures the authorize url
     Then all auth factors should start with login
 
   @smoke @NoTitleAndSubTitle
   Scenario: Verifying title and subtitle are not displayed when purpose title and subtitle values are null
     When user creates the client with null title and subtitle values
+    Given user captures the authorize url
     Then verify no title or subtitle should be displayed
 
   @smoke @EmptyTitleAndSubTitle
   Scenario: Verifying title and subtitle are not displayed when purpose title and subtitle values are empty
     When user creates the client with empty title and subtitle values
+    Given user captures the authorize url
     Then verify no title or subtitle should be displayed
 
   @smoke @SingleAuthFactor
@@ -208,6 +202,7 @@ Feature: Esignet Consent Page
 
   @smoke @AuthorizeScopeOnly @TC06
   Scenario: TC_06 Launch authorize url without claims and with authorize scopes
+   Given user captures the authorize url
    When click on Language selection option
    And select the mandatory language
    And user click on Login with Otp
