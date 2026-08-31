@@ -1473,8 +1473,6 @@ public class LoginOptionsPage extends BasePage {
 			return "";
 		}
 		return " (UI error: " + banner + ")";
-		WebElement retryButton = wait.until(ExpectedConditions.elementToBeClickable(ICON_RETRY_BUTTON_SELECTOR));
-		clickOnElement(retryButton, "Clicked on biometric device scan retry button");
 	}
 
 	private int getBiometricScanningWaitSeconds() {

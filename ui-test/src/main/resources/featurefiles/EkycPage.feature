@@ -151,3 +151,46 @@ Feature: Esignet eKyc Page
    And user verify the proceed button is displayed in terms and condition screen
    And user clicks on proceed button in terms and condition page
    Then verify user should be navigated to video preview screen page
+
+ @smoke @eKycStepsPageVerification @leaveSitePrompt @ES-1857
+ Scenario: TC_ES-1857 - Verify the "Leave site?" prompt on browser back and refresh from eKYC process steps screen
+   When click on Language selection option
+   And select the mandatory language
+   And user click on Login with Otp
+   Then user enters Registered mobile number into the mobile number field
+   And user click on get otp button
+   When user enters the correct otp
+   And click on verify Otp button
+
+   Then verify consent should ask user to proceed in attention page
+   And clicks on proceed button in attention page
+   Then verify user navigate to eKYC process steps screen
+
+   And user navigates back in the browser from eKYC process steps screen and a leave site prompt should appear
+   And user cancels the leave site prompt in eKYC process steps screen
+   Then verify user is retained on eKYC process steps screen
+
+   And user refreshes the browser from eKYC process steps screen and a leave site prompt should appear
+   And user cancels the leave site prompt in eKYC process steps screen
+   Then verify user is retained on eKYC process steps screen
+
+   And user navigates back in the browser from eKYC process steps screen and a leave site prompt should appear
+   And user confirms the leave site prompt in eKYC process steps screen
+   Then verify user is no longer on eKYC process steps screen
+   And verify user is redirected to the relying party with the consent not shared error
+
+   When user clicks on sign in with esignet button
+   And user click on Login with Otp
+   Then user enters Registered mobile number into the mobile number field
+   And user click on get otp button
+   When user enters the correct otp
+   And click on verify Otp button
+   Then verify consent should ask user to proceed in attention page
+   And clicks on proceed button in attention page
+   Then verify user navigate to eKYC process steps screen
+
+   And user refreshes the browser from eKYC process steps screen and a leave site prompt should appear
+   And user confirms the leave site prompt in eKYC process steps screen
+   Then verify the authorization failed popup is displayed
+   And user clicks Okay on the authorization failed popup
+   Then verify user is redirected to the relying party with the consent not shared error

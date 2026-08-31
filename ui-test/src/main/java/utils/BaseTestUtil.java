@@ -10,9 +10,11 @@ import java.net.URISyntaxException;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -20,6 +22,9 @@ import org.apache.commons.lang3.StringUtils;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
+import org.openqa.selenium.devtools.DevTools;
+import org.openqa.selenium.devtools.HasDevTools;
+import org.openqa.selenium.devtools.v134.network.Network;
 import org.openqa.selenium.edge.EdgeDriver;
 import org.openqa.selenium.edge.EdgeOptions;
 import org.openqa.selenium.firefox.FirefoxDriver;
@@ -346,6 +351,74 @@ public class BaseTestUtil {
 		} catch (Exception e) {
 			LOGGER.warning("Could not apply navigator.language spoof: " + e.getMessage());
 		}
+	}
+
+	/**
+	 * Flips the camera permission for the current origin mid-session via CDP,
+	 * without a driver restart. Used for scenarios where the user grants access
+	 * from browser settings after an earlier denial (e.g. TC_Pre_Video_Preview_07).
+	 */
+	public static void setCameraPermissionAtRuntime(WebDriver driver, String setting) {
+		if (!(driver instanceof ChromeDriver)) {
+			LOGGER.warning("CDP permission override skipped: not a ChromeDriver session");
+			return;
+		}
+		Map<String, Object> permission = new HashMap<>();
+		permission.put("name", "camera");
+
+		URI currentUri = URI.create(driver.getCurrentUrl());
+		String origin = currentUri.getScheme() + "://" + currentUri.getAuthority();
+
+		Map<String, Object> params = new HashMap<>();
+		params.put("permission", permission);
+		params.put("setting", setting); // "granted" | "denied" | "prompt"
+		params.put("origin", origin);
+
+		((ChromeDriver) driver).executeCdpCommand("Browser.setPermission", params);
+	}
+
+	/**
+	 * Simulates disconnecting the network via CDP right at the point the test
+	 * needs it (e.g. immediately after clicking Proceed), rather than relying on
+	 * actually toggling the host machine's Wi-Fi/adapter mid-scenario.
+	 */
+	public static void setNetworkOffline(WebDriver driver, boolean offline) {
+		if (!(driver instanceof ChromeDriver)) {
+			LOGGER.warning("CDP network override skipped: not a ChromeDriver session");
+			return;
+		}
+		Map<String, Object> params = new HashMap<>();
+		params.put("offline", offline);
+		params.put("latency", 0);
+		params.put("downloadThroughput", offline ? 0 : -1);
+		params.put("uploadThroughput", offline ? 0 : -1);
+
+		((ChromeDriver) driver).executeCdpCommand("Network.emulateNetworkConditions", params);
+	}
+
+	/**
+	 * Attaches a CDP listener that records a timestamp (epoch millis) every time
+	 * a request matching urlSubstring is sent, for as long as the returned list
+	 * is being appended to. Used to verify polling contracts (e.g. slot
+	 * availability checked every 6s, max 10 times) that aren't observable from
+	 * the DOM alone.
+	 */
+	public static List<Long> captureRequestTimestamps(WebDriver driver, String urlSubstring) {
+		List<Long> timestamps = Collections.synchronizedList(new ArrayList<>());
+		if (!(driver instanceof HasDevTools)) {
+			LOGGER.warning("Network request capture skipped: driver does not support DevTools");
+			return timestamps;
+		}
+		DevTools devTools = ((HasDevTools) driver).getDevTools();
+		devTools.createSession();
+		devTools.send(Network.enable(Optional.empty(), Optional.empty(), Optional.empty()));
+		devTools.addListener(Network.requestWillBeSent(), request -> {
+			if (request.getRequest().getUrl().contains(urlSubstring)) {
+				timestamps.add(System.currentTimeMillis());
+				LOGGER.info("Captured request to " + urlSubstring + " at " + System.currentTimeMillis());
+			}
+		});
+		return timestamps;
 	}
 
 }

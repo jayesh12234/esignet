@@ -29,7 +29,10 @@
             "{{clientAuthMethods}}"
         ],
     	"clientNameLangMap": {
-		      "{{keyLang1}}": "{{clientNameLang}}"
+		      "{{keyLang1}}": "{{clientNameLang}}"{{#if keyLang2}},
+		      "{{keyLang2}}": "{{clientNameLang2}}"{{/if}}{{#if keyLang3}},
+		      "{{keyLang3}}": "{{clientNameLang3}}"{{/if}}{{#if clientNameLangNone}},
+		      "@none": "{{clientNameLangNone}}"{{/if}}
     	},
     	
     "additionalConfig": {

@@ -293,7 +293,7 @@ public class ConsentPage extends BasePage {
 		wait.pollingEvery(Duration.ofMillis(500));
 		wait.ignoring(StaleElementReferenceException.class);
 		wait.until(driverInstance -> {
-			if (!driverInstance.findElements(OTP_INPUT_LOCATOR).isEmpty()) {
+			if (!driverInstance.findElements(By.cssSelector("input.thunderid-otp-field__input")).isEmpty()) {
 				return true;
 			}
 			String sendOtpError = readVisibleOtpSendError(driverInstance);
@@ -615,21 +615,6 @@ public class ConsentPage extends BasePage {
 		}
 	}
 
-	public void assertAuthenticationCompletedWithoutConsent() {
-		WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(90));
-		wait.pollingEvery(Duration.ofMillis(500));
-		wait.until(driverInstance -> {
-			if (isConsentScreenDisplayedNow()) {
-				throw new AssertionError("Consent screen was displayed when consent should be skipped");
-			}
-			if (isAttentionScreenDisplayedNow()) {
-				proceedThroughEkycExpectingNoConsent();
-			}
-			String url = driverInstance.getCurrentUrl();
-			return url != null && !url.contains("/authorize") && !url.contains("esignet");
-		});
-	}
-
 	public void completeConsentRegistryFlowDecliningOptionalClaims() throws Exception {
 		clickOnProceedButtonInAttentionPage();
 		clickOnProceedButton();
@@ -639,14 +624,6 @@ public class ConsentPage extends BasePage {
 		}
 		clickOnAllowBtnInConsentScreen();
 		waitUntilUserProfilePage();
-	}
-
-	public void completeConsentFlowThroughEkyc() {
-		clickOnProceedButtonInAttentionPage();
-		clickOnProceedButton();
-		completeEkycVerificationIfRequired();
-		clickOnAllowBtnInConsentScreen();
-		waitForRelyingPartyRedirect();
 	}
 
 	public void completeConsentFlowThroughEkycIfAttentionScreenIsDisplayed() {

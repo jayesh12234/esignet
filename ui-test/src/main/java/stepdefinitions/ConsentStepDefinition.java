@@ -13,6 +13,7 @@ import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.WebElement;
 import org.openqa.selenium.support.ui.WebDriverWait;
 import org.apache.log4j.Logger;
+import org.testng.SkipException;
 
 import base.BasePage;
 import base.BaseTest;
@@ -1049,7 +1050,7 @@ public class ConsentStepDefinition {
 		}
 	}
 
-	private void requirePrerequisiteVidsForConsentRegistry() {
+	private boolean requirePrerequisiteVidsForConsentRegistry() {
 		requireConsentRegistryMosipidPlugin();
 		if (!EsignetUtil.arePrerequisiteVidsAvailable()) {
 			String reason = "prerequisite perpetual and temporary VIDs are unavailable - enable CreateVID "
@@ -1059,5 +1060,10 @@ public class ConsentStepDefinition {
 			return false;
 		}
 		return true;
+	}
+
+	private void skipWithReason(String reason) {
+		ExtentReportManager.getTest().warning(reason);
+		throw new SkipException(reason);
 	}
 }
