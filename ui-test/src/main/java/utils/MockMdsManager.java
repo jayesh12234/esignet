@@ -1,12 +1,16 @@
 package utils;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.util.Base64;
+import java.util.Map;
+import java.util.Properties;
 import java.util.logging.Logger;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -19,10 +23,6 @@ import io.mosip.testrig.apirig.dataprovider.BiometricDataProvider;
 import io.mosip.testrig.apirig.dataprovider.mds.MDSClient;
 import io.mosip.testrig.apirig.testrunner.BaseTestCase;
 
-/**
- * Starts and stops embedded Mock SBI (Mock MDS) for browser-based biometric login tests.
- * Uses the same device certificates and Default profile as {@link BiometricDataProvider}.
- */
 public final class MockMdsManager {
 
 	private static final Logger LOGGER = Logger.getLogger(MockMdsManager.class.getName());
@@ -36,6 +36,10 @@ public final class MockMdsManager {
 	}
 
 	public static boolean isEnabled() {
+		String fromSys = System.getProperty("useMockMds");
+		if (fromSys != null && !fromSys.isBlank()) {
+			return Boolean.parseBoolean(fromSys.trim());
+		}
 		String value = EsignetConfigManager.getproperty("useMockMds");
 		return value != null && Boolean.parseBoolean(value.trim());
 	}
@@ -52,14 +56,11 @@ public final class MockMdsManager {
 		startForAuth(false);
 	}
 
-	/**
-	 * Starts Mock MDS mid-scenario (e.g. after an initial device-not-found scan).
-	 */
 	public static void startForBiometricScan() throws Exception {
 		if (!isEnabled()) {
 			throw new IllegalStateException("useMockMds must be true to start Mock MDS for biometric scan");
 		}
-		// Mid-scenario start: ensure no Registration SBI from prerequisites is still listening.
+
 		stopAll();
 		resetMockSbiPropertyCache();
 		startForAuth(true);
@@ -78,6 +79,7 @@ public final class MockMdsManager {
 				stop();
 			}
 
+			ensureMockMdsRuntimeLayout();
 			resetMockSbiPropertyCache();
 			ensureAuthProfileFromRegistration();
 			ensureL1AuthDeviceMetadata();
@@ -119,9 +121,6 @@ public final class MockMdsManager {
 		}
 	}
 
-	/**
-	 * Pre-loads IDA FIR cert on the test JVM classpath so Auth CAPTURE encryption does not hang.
-	 */
 	public static void warmIdaFirCertificate() {
 		try {
 			org.biometric.provider.JwtUtility.clearIdaCertificateCache();
@@ -151,10 +150,6 @@ public final class MockMdsManager {
 		}
 	}
 
-	/**
-	 * Stops every embedded SBI instance (including Registration SBI left running after mosipid
-	 * prerequisites) so the browser's first biometric scan sees no local device.
-	 */
 	public static void stopAll() {
 		synchronized (LOCK) {
 			try {
@@ -167,20 +162,48 @@ public final class MockMdsManager {
 		}
 	}
 
-	/**
-	 * Auth capture reads ISO files from Profile/Default/Auth; registration prerequisites use
-	 * Profile/Default/Registration. Copy registration profile data so auth captures match IDA.
-	 */
 	private static void ensureAuthProfileFromRegistration() throws IOException {
+
 		copyProfileBetweenPurposes(Paths.get("Profile", "Default"));
 		copyProfileBetweenPurposes(Paths.get("resource", "Profile", "Default"));
+		copyProfileBetweenPurposes(Paths.get("..", "Profile", "Default"));
+		copyProfileBetweenPurposes(Paths.get("..", "resource", "Profile", "Default"));
 	}
 
-	/**
-	 * oidc-ui accepts only L1 Auth Ready devices; apitest resources ship with L0 metadata.
-	 */
+	private static void ensureBiometricDevicesDirectoryAvailable() {
+		Path target = Paths.get(System.getProperty("user.dir"), "Biometric Devices");
+		if (Files.isDirectory(target)) {
+			return;
+		}
+		for (String candidate : new String[] { "../Biometric Devices", "../resource/Biometric Devices",
+				"resource/Biometric Devices" }) {
+			Path source = Paths.get(System.getProperty("user.dir"), candidate).normalize();
+			if (!Files.isDirectory(source)) {
+				continue;
+			}
+			try (var paths = Files.walk(source)) {
+				for (Path path : (Iterable<Path>) paths::iterator) {
+					Path dest = target.resolve(source.relativize(path));
+					if (Files.isDirectory(path)) {
+						Files.createDirectories(dest);
+					} else {
+						Files.createDirectories(dest.getParent());
+						Files.copy(path, dest, StandardCopyOption.REPLACE_EXISTING);
+					}
+				}
+				LOGGER.info("Copied Biometric Devices from " + source + " to " + target);
+				return;
+			} catch (IOException e) {
+				LOGGER.warning("Could not copy Biometric Devices from " + source + ": " + e.getMessage());
+			}
+		}
+	}
+
 	private static void ensureL1AuthDeviceMetadata() throws IOException {
-		for (String rootDir : new String[] { "Biometric Devices", "resource/Biometric Devices" }) {
+		ensureBiometricDevicesDirectoryAvailable();
+
+		for (String rootDir : new String[] { "Biometric Devices", "resource/Biometric Devices",
+				"../Biometric Devices", "../resource/Biometric Devices" }) {
 			Path biometricDevicesDir = Paths.get(System.getProperty("user.dir"), rootDir);
 			if (!Files.isDirectory(biometricDevicesDir)) {
 				continue;
@@ -241,6 +264,179 @@ public final class MockMdsManager {
 		}
 	}
 
+	private static void ensureMockMdsRuntimeLayout() {
+		ensureApplicationPropertiesAvailable();
+		ensureDevicePartnerP12AtWorkingDirectory();
+		ensureBiometricDevicesDirectoryAvailable();
+		try {
+			ensureAuthProfileFromBioValues();
+			ensureAuthProfileFromRegistration();
+		} catch (IOException e) {
+			LOGGER.warning("Could not prepare Mock MDS Auth profile: " + e.getMessage());
+		}
+	}
+
+	private static void ensureApplicationPropertiesAvailable() {
+		Path target = Paths.get(System.getProperty("user.dir"), "application.properties");
+		if (Files.isRegularFile(target)) {
+			return;
+		}
+		try (var in = MockMdsManager.class.getClassLoader().getResourceAsStream("application.properties")) {
+			if (in == null) {
+				LOGGER.warning("application.properties not found on classpath - Mock MDS will fail to start");
+				return;
+			}
+			Files.copy(in, target);
+			LOGGER.info("Copied application.properties to " + target + " for Mock MDS");
+		} catch (IOException e) {
+			LOGGER.warning("Could not copy application.properties for Mock MDS: " + e.getMessage());
+		}
+	}
+
+	private static void ensureDevicePartnerP12AtWorkingDirectory() {
+		Path cwdP12 = Paths.get(System.getProperty("user.dir"), "device-dsk-partner.p12");
+		Path bundled = findBundledDevicePartnerP12();
+		if (bundled == null) {
+			return;
+		}
+		try {
+			Files.copy(bundled, cwdP12, StandardCopyOption.REPLACE_EXISTING);
+			LOGGER.info("Copied " + bundled.getFileName() + " to " + cwdP12);
+		} catch (IOException e) {
+			LOGGER.warning("Could not copy device-dsk-partner.p12 to working directory: " + e.getMessage());
+		}
+	}
+
+	private static void ensureAuthProfileFromBioValues() throws IOException {
+		Properties bioValues = loadBioValueProperties();
+		if (bioValues.isEmpty()) {
+			return;
+		}
+		Path[] profileRoots = {
+				Paths.get(System.getProperty("user.dir"), "resource", "Profile", "Default"),
+				Paths.get(System.getProperty("user.dir"), "Profile", "Default")
+		};
+		java.util.LinkedHashMap<String, String> isoFiles = new java.util.LinkedHashMap<>();
+		isoFiles.put("Face.iso", firstBioValue(bioValues, "FaceBioValue"));
+		isoFiles.put("Left_Index.iso", firstBioValue(bioValues, "LeftIndexFingerBioValue"));
+		isoFiles.put("Left_Middle.iso", firstBioValue(bioValues, "LeftMiddleFingerBioValue"));
+		isoFiles.put("Left_Ring.iso", firstBioValue(bioValues, "LeftRingFingerBioValue"));
+		isoFiles.put("Left_Little.iso", firstBioValue(bioValues, "LeftLittleFingerBioValue"));
+		isoFiles.put("Left_Thumb.iso", firstBioValue(bioValues, "LeftThumbBioValue"));
+		isoFiles.put("Right_Index.iso", firstBioValue(bioValues, "RightIndexFingerBioValue"));
+		isoFiles.put("Right_Middle.iso", firstBioValue(bioValues, "RightMiddleFinger", "RightMiddleFingerBioValue"));
+		isoFiles.put("Right_Ring.iso", firstBioValue(bioValues, "RightRingFingerBioValue"));
+		isoFiles.put("Right_Little.iso", firstBioValue(bioValues, "RightLittleFingerBioValue"));
+		isoFiles.put("Right_Thumb.iso", firstBioValue(bioValues, "RightThumbBioValue"));
+		isoFiles.put("Left_Iris.iso", firstBioValue(bioValues, "LeftIrisBioValue"));
+		isoFiles.put("Right_Iris.iso", firstBioValue(bioValues, "RightIrisBioValue"));
+		for (Path profileRoot : profileRoots) {
+			writeIsoProfile(profileRoot.resolve("Auth"), isoFiles);
+			writeIsoProfile(profileRoot.resolve("Registration"), isoFiles);
+		}
+	}
+
+	private static Properties loadBioValueProperties() {
+		Properties properties = new Properties();
+		try (InputStream in = MockMdsManager.class.getClassLoader()
+				.getResourceAsStream("config/bioValue.properties")) {
+			if (in == null) {
+				LOGGER.warning("config/bioValue.properties not found on classpath");
+				return properties;
+			}
+			properties.load(in);
+		} catch (IOException e) {
+			LOGGER.warning("Could not load bioValue.properties: " + e.getMessage());
+		}
+		return properties;
+	}
+
+	private static String firstBioValue(Properties properties, String... keys) {
+		for (String key : keys) {
+			String value = properties.getProperty(key);
+			if (value != null && !value.isBlank()) {
+				return value.trim();
+			}
+		}
+		return null;
+	}
+
+	private static void writeIsoProfile(Path directory, Map<String, String> isoFiles) throws IOException {
+		Files.createDirectories(directory);
+		for (Map.Entry<String, String> entry : isoFiles.entrySet()) {
+			if (entry.getValue() == null) {
+				continue;
+			}
+			Path target = directory.resolve(entry.getKey());
+			if (Files.isRegularFile(target) && Files.size(target) > 0) {
+				continue;
+			}
+			byte[] decoded = decodeBioValue(entry.getValue());
+			if (decoded.length == 0) {
+				continue;
+			}
+			Files.write(target, decoded);
+		}
+		copyIfMissing(directory, "Right_Index.iso", "Finger_UKNOWN.iso");
+		copyIfMissing(directory, "Right_Index.iso", "Finger_UKNOWN_wsq.iso");
+		copyIfMissing(directory, "Left_Iris.iso", "Iris_UNKNOWN.iso");
+		copyIfMissing(directory, "Left_Index.iso", "Left_Index_wsq.iso");
+		copyIfMissing(directory, "Left_Middle.iso", "Left_Middle_wsq.iso");
+		copyIfMissing(directory, "Left_Ring.iso", "Left_Ring_wsq.iso");
+		copyIfMissing(directory, "Left_Little.iso", "Left_Little_wsq.iso");
+		copyIfMissing(directory, "Left_Thumb.iso", "Left_Thumb_wsq.iso");
+		copyIfMissing(directory, "Right_Index.iso", "Right_Index_wsq.iso");
+		copyIfMissing(directory, "Right_Middle.iso", "Right_Middle_wsq.iso");
+		copyIfMissing(directory, "Right_Ring.iso", "Right_Ring_wsq.iso");
+		copyIfMissing(directory, "Right_Little.iso", "Right_Little_wsq.iso");
+		copyIfMissing(directory, "Right_Thumb.iso", "Right_Thumb_wsq.iso");
+		LOGGER.info("Prepared Mock MDS ISO profile in " + directory);
+	}
+
+	private static void copyIfMissing(Path directory, String sourceName, String targetName) throws IOException {
+		Path source = directory.resolve(sourceName);
+		Path target = directory.resolve(targetName);
+		if (Files.isRegularFile(source) && !Files.isRegularFile(target)) {
+			Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING);
+		}
+	}
+
+	private static byte[] decodeBioValue(String value) {
+		try {
+			return Base64.getDecoder().decode(value);
+		} catch (IllegalArgumentException e) {
+			try {
+				return Base64.getUrlDecoder().decode(value);
+			} catch (IllegalArgumentException ex) {
+				LOGGER.warning("Could not decode biometric ISO value");
+				return new byte[0];
+			}
+		}
+	}
+
+	private static String bundledDevicePartnerP12Name() {
+		return "mosipid".equalsIgnoreCase(EsignetUtil.getPluginName())
+				? "device-dsk-partner-mosipid.p12"
+				: "device-dsk-partner.p12";
+	}
+
+	private static Path findBundledDevicePartnerP12() {
+		String fileName = bundledDevicePartnerP12Name();
+		String[] relativePaths = {
+				"certs/" + fileName,
+				"../certs/" + fileName,
+				fileName
+		};
+		Path cwd = Paths.get(System.getProperty("user.dir"));
+		for (String relative : relativePaths) {
+			Path candidate = cwd.resolve(relative).normalize();
+			if (Files.isRegularFile(candidate)) {
+				return candidate;
+			}
+		}
+		return null;
+	}
+
 	private static String resolveP12Directory() {
 		try {
 			String prerequisitePath = BiometricDataProvider.getKeysDirPath("", BaseTestCase.certsForModule);
@@ -258,40 +454,74 @@ public final class MockMdsManager {
 				return configured.toString();
 			}
 		}
-		Path projectP12 = Paths.get(System.getProperty("user.dir"), "device-dsk-partner.p12");
-		if (Files.isRegularFile(projectP12)) {
-			return System.getProperty("user.dir");
+		Path bundledP12 = findBundledDevicePartnerP12();
+		if (bundledP12 != null) {
+			return bundledP12.getParent().toString();
 		}
 		return System.getProperty("java.io.tmpdir");
 	}
 
-	/**
-	 * Copies bundled {@code device-dsk-partner.p12} into the AUTHCERTS directory used by Registration
-	 * prerequisites and Mock SBI when partner device generation was skipped or failed.
-	 */
+	public static boolean isDevicePartnerP12Available() {
+		return findBundledDevicePartnerP12() != null
+				|| Files.isRegularFile(Paths.get(System.getProperty("user.dir"), "device-dsk-partner.p12"));
+	}
+
 	public static void ensureDevicePartnerP12Available() {
-		Path projectP12 = Paths.get(System.getProperty("user.dir"), "device-dsk-partner.p12");
-		if (!Files.isRegularFile(projectP12)) {
-			LOGGER.warning("device-dsk-partner.p12 not found in " + System.getProperty("user.dir"));
-			return;
-		}
 		try {
 			String keysDir = BiometricDataProvider.getKeysDirPath("", BaseTestCase.certsForModule);
 			Path targetDir = Paths.get(keysDir);
 			Files.createDirectories(targetDir);
 			Path targetP12 = targetDir.resolve("device-dsk-partner.p12");
-			if (!Files.isRegularFile(targetP12)) {
-				Files.copy(projectP12, targetP12, StandardCopyOption.REPLACE_EXISTING);
-				LOGGER.info("Copied device-dsk-partner.p12 to " + targetP12);
+			Path generated = findGeneratedDevicePartnerP12(targetDir);
+			if (generated != null) {
+				if (!generated.equals(targetP12)) {
+					Files.copy(generated, targetP12, StandardCopyOption.REPLACE_EXISTING);
+					LOGGER.info("Renamed generated " + generated.getFileName() + " to " + targetP12);
+				}
+				copyGeneratedP12IntoProjectCerts(targetP12);
+				LOGGER.info("Using generated Device Provider p12 at " + targetP12);
+				return;
 			}
+			Path projectP12 = findBundledDevicePartnerP12();
+			if (projectP12 == null) {
+				projectP12 = Paths.get(System.getProperty("user.dir"), "device-dsk-partner.p12");
+			}
+			if (!Files.isRegularFile(projectP12)) {
+				LOGGER.warning("No Device Provider p12 yet under " + targetDir
+						+ " or ui-test/certs. A fresh keystore is generated each run via p12EnvEndpoint.");
+				return;
+			}
+			Files.copy(projectP12, targetP12, StandardCopyOption.REPLACE_EXISTING);
+			LOGGER.info("Copied bundled " + projectP12.getFileName() + " to " + targetP12);
 		} catch (Exception e) {
 			LOGGER.warning("Could not copy device-dsk-partner.p12 to AUTHCERTS: " + e.getMessage());
 		}
 	}
 
-	/**
-	 * Waits until MOSIPDISC and MOSIPDINFO succeed with L1 + Auth + Ready, matching oidc-ui validation.
-	 */
+	private static Path findGeneratedDevicePartnerP12(Path keysDir) {
+		for (String name : new String[] { "device-dsk-partner.p12", "device-partner.p12" }) {
+			Path candidate = keysDir.resolve(name);
+			if (Files.isRegularFile(candidate)) {
+				return candidate;
+			}
+		}
+		return null;
+	}
+
+	private static void copyGeneratedP12IntoProjectCerts(Path generatedP12) {
+		try {
+			Path certsDir = Paths.get(System.getProperty("user.dir"), "certs");
+			Files.createDirectories(certsDir);
+			Path projectP12 = certsDir.resolve(bundledDevicePartnerP12Name());
+			Files.copy(generatedP12, projectP12, StandardCopyOption.REPLACE_EXISTING);
+			Files.copy(generatedP12, Paths.get(System.getProperty("user.dir"), "device-dsk-partner.p12"),
+					StandardCopyOption.REPLACE_EXISTING);
+			LOGGER.info("Copied generated p12 to " + projectP12);
+		} catch (IOException e) {
+			LOGGER.warning("Could not copy generated p12 into ui-test/certs: " + e.getMessage());
+		}
+	}
+
 	public static void waitUntilBrowserDiscoveryReady() throws InterruptedException {
 		int timeoutSeconds = parseIntProperty("biometricDeviceDiscoveryTimeoutSeconds", 30);
 		long deadline = System.currentTimeMillis() + timeoutSeconds * 1000L;
@@ -306,9 +536,6 @@ public final class MockMdsManager {
 				+ timeoutSeconds + "s");
 	}
 
-	/**
-	 * Probes localhost SBI with MOSIPDISC (same host/port scan the browser widget uses).
-	 */
 	public static boolean verifyDeviceDiscoveryOnLocalhost() {
 		if (!running || activePort == 0) {
 			return false;
@@ -320,6 +547,7 @@ public final class MockMdsManager {
 			LOGGER.warning("Mock MDS MOSIPDISC succeeded on port " + activePort
 					+ " but device-info is not L1/Auth/Ready for the browser widget");
 			logDeviceInfoProbeFailure(activePort);
+			return false;
 		}
 		return true;
 	}
@@ -407,9 +635,6 @@ public final class MockMdsManager {
 		}
 	}
 
-	/**
-	 * Builds browser localStorage entries matching oidc-ui sbiService cache shape for the active port.
-	 */
 	public static java.util.Map<String, String> buildBrowserSbiCacheEntries(int port) {
 		java.util.Map<String, String> entries = new java.util.HashMap<>();
 		if (port <= 0) {

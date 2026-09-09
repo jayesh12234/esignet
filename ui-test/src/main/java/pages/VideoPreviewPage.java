@@ -1,12 +1,16 @@
 package pages;
 
+import java.time.Duration;
 import java.util.Objects;
 import java.util.logging.Logger;
 
 import org.openqa.selenium.JavascriptExecutor;
+import org.openqa.selenium.TimeoutException;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.WebElement;
 import org.openqa.selenium.support.FindBy;
+import org.openqa.selenium.support.ui.ExpectedConditions;
+import org.openqa.selenium.support.ui.WebDriverWait;
 import base.BasePage;
 import utils.BaseTestUtil;
 import utils.LanguageUtil;
@@ -100,7 +104,7 @@ public class VideoPreviewPage extends BasePage {
 	}
 
 	public void clickOnSignInWithEsignetButton() {
-		clickOnElement(signInWithEsignetButton, "Clicked on sign in with esignet button");
+		clickSignInWithEsignetOnRelyingPartyPortal();
 	}
 
 	public boolean isListOfInstructionsDisplayed() {
@@ -119,20 +123,10 @@ public class VideoPreviewPage extends BasePage {
 		return !isButtonEnabled(proceedButton, "Verified proceed button state");
 	}
 
-	/**
-	 * Flips camera permission to granted mid-scenario via CDP, simulating a user
-	 * re-enabling access from browser settings after an earlier denial.
-	 */
 	public void grantCameraAccessAtRuntime() {
 		BaseTestUtil.setCameraPermissionAtRuntime(driver, "granted");
 	}
 
-	/**
-	 * Confirms the screen is rendering in the language selected at login: the
-	 * persisted i18next locale matches the expected ISO code, and the header /
-	 * instructions that anchor this screen are actually visible (proxy for a
-	 * real render rather than a blank/broken page under the switched locale).
-	 */
 	public boolean isDisplayedInLanguage(String langCode) {
 		String expectedIsoCode = LanguageUtil.getIsoLanguageCode(langCode);
 		String actualIsoCode = getLanguageFromLocalStorage();
@@ -147,5 +141,28 @@ public class VideoPreviewPage extends BasePage {
 	private String getLanguageFromLocalStorage() {
 		JavascriptExecutor js = (JavascriptExecutor) driver;
 		return (String) js.executeScript("return window.localStorage.getItem('i18nextLng');");
+	}
+
+	public String getCameraPermissionState() {
+		JavascriptExecutor js = (JavascriptExecutor) driver;
+		Object state = js.executeAsyncScript(
+				"var callback = arguments[arguments.length - 1];"
+						+ "navigator.permissions.query({name: 'camera'}).then("
+						+ "function(status) { callback(status.state); },"
+						+ "function() { callback(null); });");
+		return state != null ? state.toString() : null;
+	}
+
+	public void refreshBrowser() {
+		driver.navigate().refresh();
+	}
+
+	public boolean isLeaveSitePromptDisplayed(int timeoutSeconds) {
+		try {
+			new WebDriverWait(driver, Duration.ofSeconds(timeoutSeconds)).until(ExpectedConditions.alertIsPresent());
+			return true;
+		} catch (TimeoutException e) {
+			return false;
+		}
 	}
 }

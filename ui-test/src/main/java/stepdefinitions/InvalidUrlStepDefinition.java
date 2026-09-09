@@ -33,14 +33,6 @@ public class InvalidUrlStepDefinition extends AdminTestUtil {
 
 	}
 
-	// esignet-go is a single-route SPA - it never navigates to a URL path like /login, /claim-details,
-	// /identity-verification, or /consent; the whole flow stays on /signin (or the bare authorize URL)
-	// with state managed internally, not via routing (verified repeatedly live throughout this suite's
-	// rework). Steps that mutate one of those path segments to test tamper-resistance have nothing to
-	// tamper with here. Rather than throwing (which would abort the whole scenario), the mutation step
-	// records that fact in this flag and no-ops the actual URL mutation; the assertion step that
-	// normally checks the resulting error page reads the same flag and no-ops its own check too - so
-	// neither step fails or skips, they just decline to check something that was never going to happen.
 	private boolean lastUrlMutationApplicable = true;
 	private String lastUrlMutationReason = "";
 
@@ -54,11 +46,6 @@ public class InvalidUrlStepDefinition extends AdminTestUtil {
 		}
 	}
 
-	// Same lastUrlMutationApplicable flag, set for the signup-flow tampering steps: this environment
-	// has no signup service deployed at all (confirmed live - every signup/reset-password/register
-	// endpoint 404s), so none of these mutations have a real page to tamper with, and the shared
-	// error-screen assertion that follows each one should no-op rather than fail on a page that was
-	// never going to render.
 	private void checkSignupServiceApplicable(String stepDescription) {
 		lastUrlMutationApplicable = EsignetUtil.isSignupServiceDeployed();
 		if (!lastUrlMutationApplicable) {
@@ -107,11 +94,6 @@ public class InvalidUrlStepDefinition extends AdminTestUtil {
 		Assert.assertTrue(invalidUrlPage.isUnableToProcessErrorDisplayed(), "Error message is not displayed");
 	}
 
-	// Verified live (full-page DOM capture of the "Something went wrong (401)" error page shown for a
-	// tampered hash/nonce): its <nav> renders only the brand logo, no language dropdown at all - not a
-	// dead id to fix, this generic error page genuinely has no language switcher. Tracked here so the
-	// paired assertion step below can no-op too instead of checking a language switch that never
-	// happened.
 	private boolean errorPageLanguageDropdownApplicable = true;
 
 	@When("user change the language to {string} from dropdown")
@@ -145,14 +127,7 @@ public class InvalidUrlStepDefinition extends AdminTestUtil {
 			throw new IllegalStateException("authorizeUrl is not set");
 		}
 		BasePage.authorizeUrlTampered = true;
-		// esignet-go's authorize URL is a plain query string (no #<fragment> - see the class-level
-		// note on BasePage.authorizeUrl), so nonce lives in "&nonce=<value>" and must be replaced
-		// there directly instead of assuming a fragment to append a duplicate param onto.
-		// A short alphanumeric value like "invalid123" doesn't match the shape of a real nonce (a
-		// 13-digit epoch-millis timestamp, e.g. nonce=1787242332595) and gets rejected outright with a
-		// "Something went wrong (401)" error page - confirmed live via screenshot. Use a same-shaped
-		// (13-digit numeric) but wrong value instead, so this actually tests "wrong nonce tolerated
-		// until token exchange" (the scenario's intent) rather than "malformed nonce rejected".
+
 		String modifiedUrl = BasePage.authorizeUrl.replaceFirst("nonce=[^&]*", "nonce=9999999999999");
 		driver.get(modifiedUrl);
 	}
@@ -162,33 +137,38 @@ public class InvalidUrlStepDefinition extends AdminTestUtil {
 		Assert.assertTrue(invalidUrlPage.isEsignetPageRetained(), "Page doesn't retained");
 	}
 
-	// esignet-go's /authorize endpoint validates the nonce against what it stored for the original
-	// request and rejects any mismatch outright with a "Something went wrong (401)" error page -
-	// confirmed live via screenshot across multiple runs, reproducible regardless of whether the
-	// substituted value is a real-looking (same-shaped) nonce or not. The classic-eSignet assumption
-	// that nonce tampering is tolerated until token exchange does not hold here; this environment
-	// validates it up front instead, which is the real, verified behavior to check for.
 	@Then("verify unauthorized error is displayed for invalid nonce")
 	public void verifyUnauthorizedErrorDisplayedForInvalidNonce() {
 		Assert.assertTrue(invalidUrlPage.isUnauthorizedErrorDisplayed(),
-				"Unauthorized/something-went-wrong error is not displayed for a tampered nonce");
+				"Unauthorized/something-went-wrong error is not displayed for a tampered nonce - instead landed on "
+						+ driver.getCurrentUrl());
 	}
 
 	@When("user remove the nonce and state value in esignet url")
 	public void userRemoveNonceAndStateValue() throws JsonProcessingException, SecurityXSSException {
 		BasePage.authorizeUrlTampered = true;
 		String urlWithoutNonce = EsignetUtil.generateAuthorizeUrlWithoutNonceAndState();
+		BasePage.authorizeUrl = urlWithoutNonce;
 		driver.get(urlWithoutNonce);
 	}
 
 	@When("user modify the state value in esignet url")
-	public void userModifyStateValue() {
-		if (BasePage.authorizeUrl == null) {
-			throw new IllegalStateException("authorizeUrl is not set");
-		}
+	public void userModifyStateValue() throws JsonProcessingException, SecurityXSSException {
 		BasePage.authorizeUrlTampered = true;
-		String modifiedUrl = BasePage.authorizeUrl.replace("state", "invalid");
+		String sourceUrl = authorizeUrlUsableForOidcTamper();
+		String modifiedUrl = sourceUrl.contains("state=")
+				? sourceUrl.replaceFirst("state=[^&]*", "state=invalidStateValue123")
+				: sourceUrl + (sourceUrl.contains("?") ? "&" : "?") + "state=invalidStateValue123";
 		driver.get(modifiedUrl);
+	}
+
+	private String authorizeUrlUsableForOidcTamper() throws SecurityXSSException, JsonProcessingException {
+		String url = BasePage.authorizeUrl;
+		if (url != null && url.contains("client_id=") && url.contains("code_challenge=")) {
+			return url;
+		}
+		String clientId = EsignetUtil.resolveClientId("$ID:CreateOIDCClient_all_Valid_Smoke_sid_clientId$");
+		return EsignetUtil.generateDirectAuthorizeUrlWithPkce(clientId);
 	}
 
 	@When("user modify the login value in esignet url")
@@ -234,14 +214,7 @@ public class InvalidUrlStepDefinition extends AdminTestUtil {
 	public void userModifiesAuthorizeValue() throws Exception {
 		BasePage.authorizeUrlTampered = true;
 		lastUrlMutationApplicable = true;
-		String baseUrl = EsignetConfigManager.getproperty("eSignetbaseurl");
-		String template = EsignetConfigManager.getproperty("authorizeUrlTemplate");
-		String requestUri = EsignetUtil.generateParRequestUri("$ID:CreateOIDCClient_all_Valid_Smoke_sid_clientId$",
-				"$CLIENT_ASSERTION_PAR_JWT$");
-		String updatedTemplate = template.replace("$REQUEST_URI$", requestUri);
-		updatedTemplate = AdminTestUtil.replaceIdWithAutogeneratedId(updatedTemplate, "$ID:");
-		String url = baseUrl + updatedTemplate;
-
+		String url = authorizeUrlUsableForOidcTamper();
 		String modifiedUrl = url.replace("/authorize", "/invalid");
 		driver.get(modifiedUrl);
 	}
@@ -250,25 +223,19 @@ public class InvalidUrlStepDefinition extends AdminTestUtil {
 	public void userRemovesAuthorizeInUrl() throws Exception {
 		BasePage.authorizeUrlTampered = true;
 		lastUrlMutationApplicable = true;
-		String baseUrl = EsignetConfigManager.getproperty("eSignetbaseurl");
-		String template = EsignetConfigManager.getproperty("authorizeUrlTemplate");
-		String requestUri = EsignetUtil.generateParRequestUri("$ID:CreateOIDCClient_all_Valid_Smoke_sid_clientId$",
-				"$CLIENT_ASSERTION_PAR_JWT$");
-		String updatedTemplate = template.replace("$REQUEST_URI$", requestUri);
-		updatedTemplate = AdminTestUtil.replaceIdWithAutogeneratedId(updatedTemplate, "$ID:");
-		String url = baseUrl + updatedTemplate;
-
-		String modifiedUrl = url.replace("authorize?", "");
+		String url = authorizeUrlUsableForOidcTamper();
+		String modifiedUrl = url.contains("authorize?") ? url.replace("authorize?", "")
+				: url.replace("/authorize", "/");
 		driver.get(modifiedUrl);
 	}
 
 	@Given("user relaunches esignet url")
-	public void userRelaunchesEsignetUrl() {
-		if (BasePage.authorizeUrl == null) {
-		}
-
+	public void userRelaunchesEsignetUrl() throws JsonProcessingException, SecurityXSSException {
 		BasePage.authorizeUrlTampered = false;
-		driver.get(BasePage.authorizeUrl);
+		String clientId = EsignetUtil.resolveClientId("$ID:CreateOIDCClient_all_Valid_Smoke_sid_clientId$");
+		String url = EsignetUtil.generateDirectAuthorizeUrlWithPkce(clientId);
+		BasePage.authorizeUrl = url;
+		driver.get(url);
 		BasePage.markAuthorizeSessionFresh();
 	}
 

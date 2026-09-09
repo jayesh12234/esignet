@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.URLConnection;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
@@ -25,9 +26,7 @@ public class ResourceBundleLoader {
 		if (!loaded || !currentLang.equalsIgnoreCase(loadedLanguage)) {
 			synchronized (ResourceBundleLoader.class) {
 				if (!loaded || !currentLang.equalsIgnoreCase(loadedLanguage)) {
-					// Only cache the load as done when it actually succeeded - otherwise a failed load
-					// (e.g. a transient network error) gets cached as if it succeeded, and later lookups
-					// would never retry.
+
 					if (loadResourceBundleJson(currentLang)) {
 						loaded = true;
 						loadedLanguage = currentLang;
@@ -69,16 +68,16 @@ public class ResourceBundleLoader {
 	private static Map<String, String> loadResourceBundleForIsoCode(String isoCode) {
 		Map<String, String> bundle = new HashMap<>();
 		try {
-			// esignet-go doesn't serve /locales/<iso>.json as a static file (SPA catch-all, not real
-			// translations) - the real catalog (1261 keys, verified) is embedded under
-			// response.i18n.translations of this flow-metadata endpoint instead, keyed by the same
-			// 2-letter codes ("en", "km", "hi", ...). No auth/challenge-token needed, unlike
-			// /v1/esignet/flow/execute. Note the new catalog uses a different key taxonomy than the
-			// classic eSignet UI's (e.g. no "otp.link_using_id"), so lookups for old keys may still
-			// come back missing even though the fetch itself now succeeds.
-			String clientId = EsignetConfigManager.getproperty("oidcClientId");
+
+			String clientId = EsignetUtil.getPreconfiguredPrimaryOidcClientId();
+			if (clientId == null || clientId.isBlank()) {
+				logger.warn("No primary oidcClientId configured; skipping flow/meta i18n fetch for language '"
+						+ isoCode + "'");
+				return bundle;
+			}
 			String url = EsignetConfigManager.getproperty("eSignetbaseurl")
-					+ "/v1/esignet/flow/meta?id=" + clientId + "&type=APP&language=" + isoCode;
+					+ "/v1/esignet/flow/meta?id=" + URLEncoder.encode(clientId, StandardCharsets.UTF_8)
+					+ "&type=APP&language=" + isoCode;
 			String jsonContent = downloadJson(url);
 			Map<String, Object> response = new ObjectMapper().readValue(jsonContent, new TypeReference<>() {
 			});

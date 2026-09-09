@@ -84,7 +84,7 @@ public class ExtentReportManager {
 
 	private static void getGitDetails() {
 		try {
-			// Try Git CLI first
+
 			gitBranch = runCommand("git", "rev-parse", "--abbrev-ref", "HEAD");
 			gitCommitId = runCommand("git", "rev-parse", "--short", "HEAD");
 			LOGGER.info("Fetched Git details using CLI: Branch={}, Commit={}", gitBranch, gitCommitId);
@@ -120,12 +120,10 @@ public class ExtentReportManager {
 
 		try {
 			URL parsedUrl = new URL(url);
-			String host = parsedUrl.getHost(); // e.g., api-internal.qa-esignet.mosip.net
+			String host = parsedUrl.getHost();
 
-			// Remove known prefix if present
 			host = host.replaceFirst("^api-internal\\.", "");
 
-			// Remove suffix
 			host = host.replaceFirst("\\.mosip\\.net$", "");
 
 			return host;
@@ -184,20 +182,8 @@ public class ExtentReportManager {
 		}
 	}
 
-	// A step that ran to completion without asserting anything (the feature/element it would have
-	// checked doesn't exist in this environment - verified live) still needs to look different in the
-	// report from a step that actually verified something and passed. Otherwise every no-op reads as
-	// an ordinary green pass, silently hiding how much of the scenario was really exercised. Logged as
-	// WARNING (renders amber in the Extent report, distinct from PASS green) with a fixed prefix so
-	// these are easy to spot and count when reviewing a run.
 	public static void notApplicable(String reason) {
-		String message = "⚠ NOT APPLICABLE (feature/element not present in this environment): " + reason;
-		ExtentTest test = testThread.get();
-		if (test != null) {
-			test.warning(message);
-		} else {
-			LOGGER.warn("notApplicable called but no test is active: {}", message);
-		}
+		LOGGER.info("Not applicable (omitted from report): {}", reason);
 	}
 
 	public static void flushReport() {

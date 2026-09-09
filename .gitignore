@@ -26,7 +26,6 @@ hs_err_pid*
 target/
 .idea/
 *.p12
-!ui-test/certs/device-dsk-partner.p12
 *.iml
 .settings/
 .setting/

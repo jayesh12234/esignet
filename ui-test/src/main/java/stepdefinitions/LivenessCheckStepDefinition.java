@@ -2,7 +2,6 @@ package stepdefinitions;
 
 import org.openqa.selenium.WebDriver;
 import org.testng.Assert;
-import org.apache.log4j.Logger;
 
 import base.BaseTest;
 import io.cucumber.java.en.Then;
@@ -13,7 +12,6 @@ import utils.BaseTestUtil;
 public class LivenessCheckStepDefinition {
 
 	public WebDriver driver;
-	private static final Logger logger = Logger.getLogger(LivenessCheckStepDefinition.class);
 	LivenessCheckPage livenessCheckPage;
 
 	public LivenessCheckStepDefinition(BaseTest baseTest) {

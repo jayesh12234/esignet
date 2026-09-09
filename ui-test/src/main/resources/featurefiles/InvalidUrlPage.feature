@@ -1,10 +1,11 @@
 @smokeAndRegression
 Feature: Invalid Url Page
-  This feature file is for verifying the Invalid Url page  
-    
+  This feature file is for verifying the Invalid Url page
+
   @smoke @InvalidEsignetUrlPage
   Scenario Outline: Verifying invalid esignet url page not found accessibility flow
    Given user captures the authorize url
+   Then verify login title and subtitle are displayed
    When user modifies domain in the esignet url
    Then verify this site can’t be reached error is displayed
    When user modify the nonce value in esignet url
@@ -36,22 +37,22 @@ Feature: Invalid Url Page
    And verify the page you are looking for does not exist error is displayed
    When user remove the claim details value in signup url
    And verify the page you are looking for does not exist error is displayed
-   
+
 Examples:
    | kannada | error                   |
    |  ಕನ್ನಡ   | ಪ್ರಕ್ರಿಯೆಗೊಳಿಸಲು ಸಾಧ್ಯವಾಗುತ್ತಿಲ್ಲ. |
- 
- 
+
   @smoke @InvalidSignupUrlPage
   Scenario: Verifying invalid signup url page not found accessibility flow
+   Given user captures the authorize url
+   Then verify login title and subtitle are displayed
    And user click on Login with Otp
    Then user enters Registered mobile number into the mobile number field
    And user click on get otp button
    When user enters the correct otp
    And click on verify Otp button
    Then verify consent should ask user to proceed in attention page
-   And clicks on proceed button in attention page
-   And verify user navigate to eKYC process steps screen
+   And verify user is navigated to consent screen
    When user modify the identity verification value in esignet url
    Then verify error screen along with reset password button and register button is displayed
    When user remove the identity verification value in esignet url
@@ -76,9 +77,11 @@ Examples:
    Then verify something went wrong our experts are working hard to make things working again error message displayed
    When user remove the something went wrong value in signup url
    And verify error screen along with reset password button and register button is displayed
-   
+
   @smoke @InvalidConsentPage
   Scenario: Verifying invalid consent url page not found accessibility flow
+   Given user captures the authorize url
+   Then verify login title and subtitle are displayed
    And user click on Login with Otp
    Then user enters Registered mobile number into the mobile number field
    And user click on get otp button

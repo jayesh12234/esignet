@@ -40,3 +40,7 @@ screenshots/
 /reg
 ./reg
 reports
+/resource/Profile/
+/Profile/
+/device-dsk-partner.p12
+/certs/*.p12

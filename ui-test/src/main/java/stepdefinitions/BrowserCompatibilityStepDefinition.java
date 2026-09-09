@@ -23,6 +23,7 @@ public class BrowserCompatibilityStepDefinition {
 	@When("user's browser is overridden to an unsupported user agent")
 	public void userBrowserIsOverriddenToUnsupportedUserAgent() {
 		browserCompatibilityPage.setUserAgentOverride(UNSUPPORTED_USER_AGENT);
+		pages.ConsentPage.refreshAfterAttentionProceed = true;
 	}
 
 	@Then("verify the browser compatibility screen header is displayed as {string}")

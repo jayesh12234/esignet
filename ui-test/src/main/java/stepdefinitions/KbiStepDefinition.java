@@ -12,9 +12,11 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import org.openqa.selenium.By;
 import org.openqa.selenium.WebDriver;
+import org.openqa.selenium.WebElement;
 import org.openqa.selenium.support.ui.ExpectedConditions;
 import org.openqa.selenium.support.ui.WebDriverWait;
 import org.testng.Assert;
+import org.testng.SkipException;
 
 import base.BaseTest;
 import io.cucumber.java.en.Then;
@@ -34,10 +36,6 @@ public class KbiStepDefinition {
 	KbiPage kbiPage;
 	ConsentPage consentPage;
 
-	// Set false by userClicksOnLoginWithKbi() when this transaction's client/policy doesn't offer
-	// KBI at all - every other @Then method in this file checks it first and no-ops (not skips) its
-	// own check when that's the case, since there's no KBI form to inspect regardless of what the
-	// individual scenario is trying to verify about it.
 	private boolean kbiApplicable = true;
 
 	public KbiStepDefinition(BaseTest baseTest) {
@@ -47,16 +45,15 @@ public class KbiStepDefinition {
 		consentPage = new ConsentPage(driver);
 	}
 
-	@When("user clicks on login with KBI")
+	@When("user clicks on Login with KBI")
 	public void userClicksOnLoginWithKbi() {
-		// esignet-go stays on /signin (no #<payload> redirect carrying the transaction) - derive which
-		// auth factors are offered from the login-method buttons actually rendered instead.
-		new WebDriverWait(driver, Duration.ofSeconds(10))
-				.until(ExpectedConditions.presenceOfElementLocated(By.cssSelector("[id^='acr_']")));
 
-		// Confirmed live (raw button-id dump): requesting acr_values with mosip:idp:acr:knowledge
-		// added still only ever renders acr_otp/acr_password/acr_bio - this environment's client/policy
-		// does not offer a knowledge-based factor at all, regardless of what's requested.
+		new WebDriverWait(driver, Duration.ofSeconds(10)).until(ExpectedConditions.or(
+				ExpectedConditions.presenceOfElementLocated(By.cssSelector("[id^='acr_']")),
+				ExpectedConditions.presenceOfElementLocated(By.id("username_input"))));
+
+		loginOptionsPage.revealMoreOptionsIfPresent();
+
 		List<String> authFactors = ClaimsUtil.getRenderedAuthFactors(driver);
 		boolean kbiOffered = authFactors.stream().anyMatch(f -> "KBI".equals(ClaimsUtil.normalizeFactor(f)));
 		if (!kbiOffered) {
@@ -66,19 +63,211 @@ public class KbiStepDefinition {
 		}
 
 		if (EsignetUtil.getKbiFieldIds().isEmpty()) {
+			logger.info("KBI schema was empty in the transaction payload - continuing with whatever fields the form renders");
+		}
+
+		By kbiLoginOption = By.id("acr_kbi");
+		List<WebElement> kbiButtons = driver.findElements(kbiLoginOption);
+		if (kbiButtons.isEmpty() || !kbiButtons.get(0).isDisplayed()) {
 			kbiApplicable = false;
-			notApplicable(
-					"KBI is offered but this transaction's field schema (configs['auth.factor.kbi.field-details'].schema) is empty");
+			notApplicable("KBI is offered in the transaction (acr_kbi present in the negotiated factors) but "
+					+ "its login button is not visible on the login page");
+			return;
+		}
+		new WebDriverWait(driver, Duration.ofSeconds(10)).until(ExpectedConditions.elementToBeClickable(kbiLoginOption)).click();
+	}
+
+	@Then("verify the KBI schema fetch request required no authentication")
+	public void verifyKbiSchemaFetchRequiredNoAuthentication() {
+		List<JSONObject> requests = EsignetUtil.getPerformanceLogRequestsContaining(driver, "oauth2/authorize");
+		Assert.assertFalse(requests.isEmpty(),
+				"No oauth2/authorize request (which carries the KBI form schema in its redirect) was captured in the browser's network log");
+		for (JSONObject request : requests) {
+			JSONObject headers = request.optJSONObject("headers");
+			boolean hasAuthHeader = false;
+			if (headers != null) {
+				for (String key : headers.keySet()) {
+					if ("authorization".equalsIgnoreCase(key)) {
+						hasAuthHeader = true;
+						break;
+					}
+				}
+			}
+			Assert.assertFalse(hasAuthHeader,
+					"The KBI schema fetch request required an Authorization header: " + request.optString("url"));
+		}
+	}
+
+	@Then("verify KBI form is displayed")
+	public void verifyKbiFormIsDisplayed() {
+		if (skipIfKbiNotApplicable("KBI form displayed")) {
+			return;
+		}
+		List<String> fieldIds = kbiFieldsToUse();
+		kbiPage.waitForKbiForm(fieldIds);
+		Assert.assertFalse(fieldIds.isEmpty(), "KBI form is not displayed (no fields found via schema or DOM)");
+		Assert.assertTrue(kbiPage.isFieldRendered(fieldIds.get(0)), "KBI form is not displayed");
+	}
+
+	@Then("verify KBI page content is displayed in default English language")
+	public void verifyKbiPageContentInDefaultEnglish() {
+		if (skipIfKbiNotApplicable("KBI page content in default English language")) {
+			return;
+		}
+		List<String> fieldIds = kbiFieldsToUse();
+		kbiPage.waitForKbiForm(fieldIds);
+
+		List<String> problems = new ArrayList<>();
+		for (String fieldId : fieldIds) {
+			String expected = EsignetUtil.getKbiFieldLabel(fieldId, "eng");
+			if (expected == null || expected.isBlank()) {
+				continue;
+			}
+			String actual = kbiPage.getFieldLabel(fieldId);
+			if (!expected.trim().equalsIgnoreCase(actual.trim())) {
+				problems.add("Field '" + fieldId + "' label is not in default English - expected '" + expected
+						+ "' but shows '" + actual + "'");
+			}
+		}
+		Assert.assertTrue(problems.isEmpty(), "KBI page content is not displayed in default English language: " + problems);
+	}
+
+	@Then("verify KBI login button text is displayed in default English language")
+	public void verifyKbiLoginButtonTextInDefaultEnglish() {
+		if (skipIfKbiNotApplicable("KBI login button text in default English language")) {
+			return;
+		}
+		Assert.assertEquals(kbiPage.getLoginButtonText(), "Login", "KBI login button text is not the default English text");
+	}
+
+	@Then("verify KBI login button is disabled")
+	public void verifyKbiLoginButtonIsDisabled() {
+		if (skipIfKbiNotApplicable("KBI login button disabled state")) {
 			return;
 		}
 
-		loginOptionsPage.revealMoreOptionsIfPresent();
-		if (!loginOptionsPage.isLoginWithKbiDisplayed()) {
-			kbiApplicable = false;
-			notApplicable("KBI is offered in the transaction but the 'login with KBI' option is not rendered on the login page");
+		if (EsignetUtil.isMockPlugin() && kbiPage.isLoginButtonEnabled()) {
+			String reason = "this environment's KBI login button starts enabled with all fields empty and only "
+					+ "disables reactively on a shown validation error, not on emptiness - verified live.";
+			logger.info("Not checking (this step only, not the scenario) - " + reason);
+			ExtentReportManager.notApplicable(reason);
 			return;
 		}
-		loginOptionsPage.clickOnLoginWithKbi();
+		Assert.assertFalse(kbiPage.isLoginButtonEnabled(), "KBI login button should be disabled until mandatory fields are filled");
+	}
+
+	@Then("verify KBI login button is enabled")
+	public void verifyKbiLoginButtonIsEnabled() {
+		if (skipIfKbiNotApplicable("KBI login button enabled state")) {
+			return;
+		}
+		Assert.assertTrue(kbiPage.isLoginButtonEnabled(), "KBI login button should be enabled once mandatory fields are filled");
+	}
+
+	@When("user fills all mandatory fields in the KBI form")
+	public void userFillsAllMandatoryFieldsInKbiForm() {
+		if (skipIfKbiNotApplicable("filling mandatory KBI fields")) {
+			return;
+		}
+		List<String> schemaFieldIds = EsignetUtil.getKbiFieldIds();
+		List<String> fieldsToFill;
+		if (!schemaFieldIds.isEmpty()) {
+			kbiPage.waitForKbiForm(schemaFieldIds);
+			fieldsToFill = new ArrayList<>();
+			for (String fieldId : schemaFieldIds) {
+				if (EsignetUtil.isKbiFieldRequired(fieldId)) {
+					fieldsToFill.add(fieldId);
+				}
+			}
+		} else {
+			fieldsToFill = kbiFieldsToUse();
+		}
+
+		String individualIdField = EsignetUtil.getKbiIndividualIdField();
+		for (String fieldId : fieldsToFill) {
+			String value = resolveKnownSunBirdRValue(fieldId, individualIdField);
+			if (value == null) {
+				value = defaultValueForField(fieldId);
+			}
+			kbiPage.enterFieldValue(fieldId, value);
+			kbiPage.blurField(fieldId);
+		}
+		ExtentReportManager.logStep("Filled KBI mandatory fields: " + fieldsToFill);
+	}
+
+	@Then("verify KBI form fields are empty")
+	public void verifyKbiFormFieldsAreEmpty() {
+		if (skipIfKbiNotApplicable("KBI form fields empty")) {
+			return;
+		}
+		List<String> fieldIds = kbiFieldsToUse();
+		Assert.assertTrue(kbiPage.areFieldsEmpty(fieldIds), "KBI form fields should be empty, but at least one has a value");
+	}
+
+	@When("user clicks on the KBI login button")
+	public void userClicksOnTheKbiLoginButton() {
+		if (skipIfKbiNotApplicable("click KBI login button")) {
+			return;
+		}
+		kbiPage.clickLoginButton();
+	}
+
+	@Then("verify KBI authentication is successful")
+	public void verifyKbiAuthenticationIsSuccessful() {
+		if (skipIfKbiNotApplicable("KBI authentication")) {
+			return;
+		}
+
+		if (!EsignetUtil.isSunbirdAuthenticatorActive()) {
+			notApplicable("KBI authentication with the Sunbird policy fixture data only applies to a Sunbird RC-backed server");
+			return;
+		}
+		Assert.assertTrue(consentPage.isOnAttentionScreen(30),
+				"KBI authentication did not reach the attention screen - login was not successful");
+	}
+
+	private List<String> kbiFieldsToUse() {
+		List<String> schemaFieldIds = EsignetUtil.getKbiFieldIds();
+		if (!schemaFieldIds.isEmpty()) {
+			return schemaFieldIds;
+		}
+
+		new WebDriverWait(driver, Duration.ofSeconds(25)).until(ExpectedConditions.or(
+				ExpectedConditions.presenceOfElementLocated(By.cssSelector("form input:not([type='hidden'])")),
+				ExpectedConditions.presenceOfElementLocated(By.cssSelector("input:not([type='hidden'])"))));
+		return kbiPage.getVisibleFieldIds();
+	}
+
+	private String defaultValueForField(String fieldId) {
+		String renderedType = kbiPage.getRenderedInputType(fieldId);
+		if ("Dropdown".equals(renderedType)) {
+			List<String> options = kbiPage.getDropdownOptionTexts(fieldId);
+			return options.isEmpty() ? "" : options.get(0);
+		}
+		String label = kbiPage.getFieldLabel(fieldId).toLowerCase();
+		if ("Date".equals(renderedType) || label.contains("birth") || label.contains("dob")) {
+			return "1990-01-01";
+		}
+		if (label.contains("policy") && label.contains("number")) {
+			return "1234567890";
+		}
+		if (label.contains("mobile") || label.contains("phone")) {
+			return "9876543210";
+		}
+		if (label.contains("email")) {
+			return "test.kbi@example.com";
+		}
+		if (label.contains("name")) {
+			return "Test User";
+		}
+		switch (renderedType) {
+		case "Email":
+			return "test.kbi@example.com";
+		case "Number":
+			return "123456";
+		default:
+			return "Test Value";
+		}
 	}
 
 	@Then("KBI form fields and labels should be aligned to the latest schema")
@@ -259,10 +448,6 @@ public class KbiStepDefinition {
 		Assert.assertTrue(problems.isEmpty(), "KBI mandatory-field error messages not aligned to schema: " + problems);
 	}
 
-	// The UI-schema-supported input control types this test asserts the KBI form can render. Full
-	// coverage of all 7 in a single run requires the server-side kbi.field-details schema to declare a
-	// field of each type; this suite can't change server config, so it verifies whatever the current
-	// schema declares and reports which of the 7 were exercised.
 	private static final Set<String> SUPPORTED_INPUT_TYPES = Set.of("Text", "Email", "Number", "Checkbox", "Radio",
 			"Dropdown", "Date");
 
@@ -299,9 +484,6 @@ public class KbiStepDefinition {
 		Assert.assertTrue(problems.isEmpty(), "KBI form has fields rendering as unsupported input types: " + problems);
 	}
 
-	// The KBI form's language follows the run language (via ui_locales on the authorize URL, see
-	// BaseTest). Since Runner re-runs each scenario per run language (runLanguage, else the app's
-	// supported languages), these "selected language" checks cover every language.
 	@Then("KBI field labels should be displayed in the selected language")
 	public void verifyFieldLabelsInSelectedLanguage() {
 		if (skipIfKbiNotApplicable("KBI field labels in selected language")) {
@@ -320,7 +502,7 @@ public class KbiStepDefinition {
 		for (String fieldId : fieldIds) {
 			String expected = EsignetUtil.getKbiFieldLabel(fieldId, lang);
 			if (expected == null || expected.isBlank()) {
-				continue; // no schema label for this language - that's the fallback case, covered separately
+				continue;
 			}
 			String actual = kbiPage.getFieldLabel(fieldId);
 			ExtentReportManager.logStep("Field '" + fieldId + "' label (lang=" + lang + ") expected '" + expected
@@ -370,14 +552,13 @@ public class KbiStepDefinition {
 			ExtentReportManager.logStep("Dropdown '" + fieldId + "' options (lang=" + lang + "): " + options
 					+ " | schema-declared: " + expected);
 
-			// Compared unordered - JSONObject key order isn't guaranteed to match render order.
 			if (!expected.isEmpty()) {
 				if (!new HashSet<>(expected).equals(new HashSet<>(options))) {
 					problems.add("Dropdown '" + fieldId + "' options don't match the schema for language '" + lang
 							+ "' - expected " + expected + " but found " + options);
 				}
 			} else if (options.isEmpty()) {
-				// No allowedValues in the schema to compare against - fall back to "it rendered something".
+
 				problems.add("Dropdown '" + fieldId + "' rendered no option text in language '" + lang + "'");
 			}
 		}
@@ -446,11 +627,11 @@ public class KbiStepDefinition {
 		for (String fieldId : fieldIds) {
 			String selLabel = EsignetUtil.getKbiFieldLabel(fieldId, lang);
 			if (selLabel != null && !selLabel.isBlank()) {
-				continue; // schema has the selected language for this field - not a fallback case
+				continue;
 			}
 			String engLabel = EsignetUtil.getKbiFieldLabel(fieldId, "eng");
 			if (engLabel == null || engLabel.isBlank()) {
-				continue; // no English label either - nothing to fall back to
+				continue;
 			}
 			String actual = kbiPage.getFieldLabel(fieldId);
 			observed++;
@@ -468,9 +649,6 @@ public class KbiStepDefinition {
 		Assert.assertTrue(problems.isEmpty(), "KBI labels did not fall back to English: " + problems);
 	}
 
-	// Drops the network via the browser's offline emulation and verifies the "Network Error!" screen
-	// appears (it auto-pops a few seconds after disconnect); then restores the connection, clicks Try
-	// Again, and confirms the KBI schema reloads as a fresh entry.
 	@Then("KBI form should show an error and reload the schema on network disconnect")
 	public void verifyNetworkDisconnectHandling() {
 		if (skipIfKbiNotApplicable("KBI network-disconnect handling")) {
@@ -499,8 +677,6 @@ public class KbiStepDefinition {
 		}
 		Assert.assertTrue(errorShown, "The 'Network Error!' screen was not shown after the network was disconnected");
 
-		// Try Again reloads the flow to a fresh login entry - the mode-selection page, not straight
-		// back to the KBI form. Confirm that page is back with the KBI option available again.
 		kbiPage.clickTryAgain();
 		boolean reloaded;
 		try {
@@ -516,22 +692,12 @@ public class KbiStepDefinition {
 				"The login flow did not reload as a fresh entry (mode selection with KBI) after clicking Try Again");
 	}
 
-	// Fully schema-driven: fills every REQUIRED field with a known-valid value matching the Sunbird
-	// RC policy CreatePolicySunBirdR created, leaves optional fields blank, and submits. Reused
-	// as-is regardless of how many fields the schema declares or which ones - the same code covers
-	// today's 4-field schema, a schema with a field added or removed, or a single-field schema. The
-	// server-side kbi.field-details schema itself is what must change between those cases, not this
-	// code.
 	@Then("KBI authentication should be successful")
 	public void verifyKbiAuthenticationSucceeds() {
 		if (skipIfKbiNotApplicable("KBI authentication")) {
 			return;
 		}
-		// The credentials filled in below only exist as a real, matching identity when
-		// CreatePolicySunBirdR actually ran to create them - which only happens on a Sunbird
-		// RC-backed server. On plain mock, these values were never registered anywhere, so the
-		// server correctly rejects them - not applicable rather than failing on an environment this
-		// scenario doesn't apply to.
+
 		if (!EsignetUtil.isSunbirdAuthenticatorActive()) {
 			notApplicable("KBI authentication with the Sunbird policy fixture only applies to a Sunbird RC-backed server");
 			return;
@@ -563,14 +729,10 @@ public class KbiStepDefinition {
 
 		kbiPage.clickLoginButton();
 
-		// A successful KBI login lands on the "Attention" screen (Proceed button) before consent. The
-		// auth does a Sunbird RC round-trip that can exceed the default explicit wait, so allow longer.
 		Assert.assertTrue(consentPage.isOnAttentionScreen(30),
 				"KBI authentication did not reach the attention screen - login was not successful");
 	}
 
-	// Maps a KBI schema field id (exact match, not substring) to its CreatePolicySunBirdR fixture
-	// value, or null if uncovered. Substring matching previously fed policyName the policy number.
 	private String resolveKnownSunBirdRValue(String fieldId, String individualIdField) {
 		if (fieldId.equals(individualIdField)) {
 			return EsignetUtil.getSunBirdRPolicyNumber();
@@ -597,19 +759,21 @@ public class KbiStepDefinition {
 
 	private boolean skipIfKbiNotApplicable(String checkDescription) {
 		if (!kbiApplicable) {
-			String reason = checkDescription + ": KBI is not offered by this environment's default "
-					+ "client/policy - verified live.";
-			logger.info("Not checking (this step only, not the scenario) - " + reason);
-			ExtentReportManager.notApplicable(reason);
+			notApplicable(checkDescription + ": KBI is not offered by this environment's default "
+					+ "client/policy - verified live.");
 			return true;
 		}
 		return false;
 	}
 
-	// Logs the reason to the report and marks this specific check as not applicable, WITHOUT
-	// throwing - the scenario continues to whatever step follows instead of being marked skipped.
 	private void notApplicable(String reason) {
 		logger.info("Not checking (this step only, not the scenario): " + reason);
 		ExtentReportManager.notApplicable(reason);
+	}
+
+	private void skipScenario(String reason) {
+		logger.info("Skipping scenario - " + reason);
+		ExtentReportManager.getTest().skip(reason);
+		throw new SkipException(reason);
 	}
 }

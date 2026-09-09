@@ -42,9 +42,6 @@ public class AddIdentity extends EsignetUtil implements ITest {
 	public Response response = null;
 	private boolean isWaitRequired = false;
 
-	/**
-	 * get current testcaseName
-	 */
 	@Override
 	public String getTestName() {
 		return testCaseName;
@@ -59,11 +56,6 @@ public class AddIdentity extends EsignetUtil implements ITest {
 			logger.setLevel(Level.ERROR);
 	}
 
-	/**
-	 * Data provider class provides test case list
-	 * 
-	 * @return object of data provider
-	 */
 	@DataProvider(name = "testcaselist")
 	public Object[] getTestCaseList(ITestContext context) {
 		String ymlFile = context.getCurrentXmlTest().getLocalParameters().get("ymlFile");
@@ -71,21 +63,13 @@ public class AddIdentity extends EsignetUtil implements ITest {
 		return getYmlTestData(ymlFile);
 	}
 
-	/**
-	 * Test method for OTP Generation execution
-	 * 
-	 * @param objTestParameters
-	 * @param testScenario
-	 * @param testcaseName
-	 * @throws Exception
-	 */
 	@Test(dataProvider = "testcaselist")
 	public void test(TestCaseDTO testCaseDTO) throws Exception, SecurityXSSException {
 		testCaseName = testCaseDTO.getTestCaseName();
 		testCaseName = EsignetUtil.isTestCaseValidForExecution(testCaseDTO);
 
 		boolean isMockIdentitySystem = testCaseDTO.getEndPoint().contains("mock-identity-system");
-		// A Sunbird RC-backed server authenticates against its own registry, not the mock-identity-system.
+
 		if (isMockIdentitySystem && EsignetUtil.isSunbirdAuthenticatorActive()) {
 			throw new SkipException(
 					"Skipped: " + testCaseName + " - mock-identity-system identity is not used on a Sunbird RC-backed server");
@@ -93,9 +77,7 @@ public class AddIdentity extends EsignetUtil implements ITest {
 		if (testCaseName.contains("Infant")) {
 			writeConfigValueAndSkipIfProvided("infantUin", testCaseName, "UIN");
 		} else {
-			// A configured uin/mockUin already skips (with its UIN written) above; uinPhoneNumber alone
-			// only overrides the OTP-login phone and must not skip identity creation on its own, or no UIN
-			// ever gets written for downstream $ID:...AddIdentity..._UIN$ resolution to consume.
+
 			writeConfigValueAndSkipIfProvided(isMockIdentitySystem ? "mockUin" : "uin", testCaseName, "UIN");
 		}
 
@@ -186,11 +168,6 @@ public class AddIdentity extends EsignetUtil implements ITest {
 
 	}
 
-	/**
-	 * The method ser current test name to result
-	 * 
-	 * @param result
-	 */
 	@AfterMethod(alwaysRun = true)
 	public void setResultTestName(ITestResult result) {
 		result.setAttribute("TestCaseName", testCaseName);

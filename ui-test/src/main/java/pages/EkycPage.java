@@ -127,8 +127,7 @@ public class EkycPage extends BasePage {
 	WebElement eKycTermsAndConditionsProceedButton;
 
 	public boolean isEkycProcessStepsScreenLabelDisplayed() {
-		// The attention-page-to-eKYC-screen transition can take longer than the default explicit
-		// wait timeout under backend load, so this waits longer before the usual visibility check.
+
 		try {
 			new WebDriverWait(driver, Duration.ofSeconds(utils.EsignetConfigManager.getTimeout()))
 					.until(ExpectedConditions.visibilityOf(ekycProcessStepsScreenLabel));
@@ -216,7 +215,7 @@ public class EkycPage extends BasePage {
 	}
 
 	public void clickOnSignInWithEsignetButton() {
-		clickWhenClickable(signInWithEsignetButton);
+		clickSignInWithEsignetOnRelyingPartyPortal();
 	}
 
 	public boolean isProceedButtonVisible() {
@@ -357,6 +356,29 @@ public class EkycPage extends BasePage {
 
 	public boolean isEkycTermsAndConditionScreenVisible() {
 		return isElementVisible(ekycTermsAndConditionsHeader, "Verified eKyc terms and condition screen is visible");
+	}
+
+	public boolean isLeaveSitePromptDisplayed(int timeoutSeconds) {
+		try {
+			new WebDriverWait(driver, Duration.ofSeconds(timeoutSeconds)).until(ExpectedConditions.alertIsPresent());
+			return true;
+		} catch (org.openqa.selenium.TimeoutException e) {
+			return false;
+		}
+	}
+
+	@FindBy(xpath = "//div[@role='alertdialog']//h2[contains(text(),'Authorization Failed') or contains(text(),'authorization failed')]")
+	WebElement authorizationFailedPopupHeader;
+
+	@FindBy(xpath = "//div[@role='alertdialog']//button[contains(text(),'Okay') or contains(text(),'OK')]")
+	WebElement authorizationFailedPopupOkayButton;
+
+	public boolean isAuthorizationFailedPopupDisplayed() {
+		return isElementVisible(authorizationFailedPopupHeader, "Verified authorization failed popup is displayed");
+	}
+
+	public void clickOkayOnAuthorizationFailedPopup() {
+		clickOnElement(authorizationFailedPopupOkayButton, "Clicked Okay on authorization failed popup");
 	}
 
 }

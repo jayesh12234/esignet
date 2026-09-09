@@ -14,27 +14,12 @@ import org.openqa.selenium.support.ui.WebDriverWait;
 
 import base.BasePage;
 
-/**
- * The "unsupported browser" screen is rendered by the external
- * identity-verification micro-frontend (not vendored in this repo, reached
- * via the eKYC process flow), so none of these locators are confirmed
- * against the real DOM - they're built from the exact text strings given in
- * the test case, using safe generic text-matching xpaths rather than
- * guessed classes/ids/testids, since a wrong id/class guess would silently
- * match nothing while a wrong text guess at least fails loudly and points at
- * the real copy to fix. Verify/tighten during debug once the real DOM is
- * available.
- */
 public class BrowserCompatibilityPage extends BasePage {
 
 	public BrowserCompatibilityPage(WebDriver driver) {
 		super(driver);
 	}
 
-	/**
-	 * Overrides the browser's user agent at runtime via CDP, then reloads the
-	 * current page so the server sees the overridden UA on the next request.
-	 */
 	public void setUserAgentOverride(String userAgent) {
 		if (!(driver instanceof ChromeDriver chromeDriver)) {
 			return;
@@ -42,7 +27,6 @@ public class BrowserCompatibilityPage extends BasePage {
 		Map<String, Object> params = new HashMap<>();
 		params.put("userAgent", userAgent);
 		chromeDriver.executeCdpCommand("Network.setUserAgentOverride", params);
-		driver.navigate().refresh();
 	}
 
 	@FindBy(xpath = "//*[normalize-space(text())='Alert!']")
@@ -102,14 +86,6 @@ public class BrowserCompatibilityPage extends BasePage {
 	private static final String INCOMPATIBLE_BROWSER_MESSAGE = "We're sorry! Please upgrade to the latest version of the browser & try again.";
 	private static final Duration RELYING_PARTY_REDIRECT_WAIT = Duration.ofSeconds(30);
 
-	/**
-	 * Mirrors LivenessCheckPage.waitForRedirectWithVerificationIncompleteError(): waits for
-	 * the redirect back to the relying party carrying the error code, then
-	 * confirms the relying party's own rendition of the message is shown.
-	 * "incompatible_browser" is the one error-code value actually confirmed in
-	 * oidc-ui's source (clientConstants.js) - the message text itself is taken
-	 * from the test case as given, unconfirmed against the real DOM.
-	 */
 	public boolean waitForIncompatibleBrowserRedirect() {
 		WebDriverWait wait = new WebDriverWait(driver, RELYING_PARTY_REDIRECT_WAIT);
 		try {

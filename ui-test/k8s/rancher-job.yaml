@@ -1,0 +1,66 @@
+# Rancher / Kubernetes Job for the uitest-esignet image built by
+# .github/workflows/push-trigger.yml (job build-dockers-uitest-esignet).
+#
+# Image name after a push to branch <branch>:
+#   <DEV_NAMESPACE_DOCKER_HUB>/uitest-esignet:<branch>
+# Example: mosipid/uitest-esignet:thunder
+#
+# Import this YAML in Rancher (Cluster → Import YAML) after replacing
+# IMAGE and the env values for the target environment.
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: uitest-esignet
+  labels:
+    app: uitest-esignet
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: uitest-esignet
+    spec:
+      restartPolicy: Never
+      securityContext:
+        fsGroup: 1001
+      containers:
+        - name: uitest-esignet
+          image: mosipid/uitest-esignet:thunder
+          imagePullPolicy: Always
+          env:
+            - name: ENV_ENDPOINT
+              value: "https://api-internal.esqa.mosip.net"
+            - name: ENV_USER
+              value: "api-internal.esqa"
+            - name: MODULES
+              value: "esignet"
+            - name: ENV_TESTLEVEL
+              value: "smokeAndRegression"
+            - name: JAVA_EXTRA_OPTS
+              value: "-Xmx2g"
+            # Optional filters (leave empty for the full suite):
+            # - name: CUCUMBER_FILTER_TAGS
+            #   value: "@smoke"
+            # - name: RUN_ONLY_SCENARIO
+            #   value: "TC_Browser_Compatibility_check_01"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 2Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: reports
+              mountPath: /home/mosip/test-output
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+        - name: reports
+          emptyDir: {}

@@ -1,10 +1,15 @@
 package pages;
 
+import java.time.Duration;
+import java.util.List;
+
 import org.openqa.selenium.By;
 import org.openqa.selenium.JavascriptExecutor;
+import org.openqa.selenium.TimeoutException;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.WebElement;
 import org.openqa.selenium.support.FindBy;
+import org.openqa.selenium.support.ui.WebDriverWait;
 
 import base.BasePage;
 import utils.BaseTestUtil;
@@ -16,48 +21,123 @@ public class MultiLanguagePage extends BasePage {
         super(driver);
     }
 
-    // The language switcher has no id at all - only aria-haspopup="listbox" inside the nav bar - and
-    // its options render as role="option" buttons, not role="menuitem"/plain divs. Verified against
-    // the live login page.
-    @FindBy(css = "nav button[aria-haspopup='listbox']")
+    @FindBy(css = "#language_selection, #language_dropdown, nav button[aria-haspopup='listbox']")
     WebElement languageSelection;
 
-    /** @return false if a real esignet page genuinely isn't reachable (caller should treat as not
-     *  applicable and skip); true otherwise. */
+    private static final By LANGUAGE_TRIGGER = By.cssSelector(
+            "#language_selection, #language_dropdown, nav button[aria-haspopup='listbox']");
+
     public boolean clickOnLanguageSelection() {
-        if (!ensureFreshEsignetLoginPage(By.cssSelector("nav button[aria-haspopup='listbox']"))) {
+        if (!ensureFreshEsignetLoginPage(LANGUAGE_TRIGGER) && findLanguageDropdownTrigger() == null) {
             return false;
         }
-        clickOnElement(languageSelection,"Clicked on language selection option");
+        WebElement trigger = findLanguageDropdownTrigger();
+        if (trigger == null) {
+            return false;
+        }
+        clickOnElement(trigger, "Clicked on language selection option");
         return true;
     }
 
     public void clickOnLanguage() {
-        String langCode = BaseTestUtil.getThreadLocalLanguage();
-        By optionLocator = By.xpath("//button[@role='option' and normalize-space()="
-                + toXpathLiteral(LanguageUtil.getDisplayName(langCode)) + "]");
-        WebElement language;
-        try {
-            language = waitForElementVisible(optionLocator);
-        } catch (org.openqa.selenium.TimeoutException e) {
-            // Occasional flake: the dropdown trigger click doesn't always land as an open dropdown
-            // (observed live, not consistently reproducible) - re-click the trigger and retry once
-            // before giving up for real.
-            clickOnElement(languageSelection, "Re-clicked language selection option (retry)");
-            language = waitForElementVisible(optionLocator);
-        }
-        clickOnElement(language,"Selected the given language");
+        clickOnLanguage(LanguageUtil.getDisplayName(BaseTestUtil.getThreadLocalLanguage()));
     }
 
-    // Verified live: esignet-go persists the chosen language in a real cookie named
-    // "thunderid-i18n-language" (2-letter code, e.g. "en"/"fr"/"ar"). Falls back to "i18nextLng" -
-    // the classic-eSignet cookie name - for environments running that build instead.
-    public String getLanguageFromCookie() {
-        org.openqa.selenium.Cookie cookie = driver.manage().getCookieNamed("thunderid-i18n-language");
-        if (cookie == null) {
-            cookie = driver.manage().getCookieNamed("i18nextLng");
+    public void clickOnLanguage(String displayName) {
+        WebElement trigger = findLanguageDropdownTrigger();
+        if (trigger != null) {
+            String current = safeNormalize(trigger.getText());
+            if (current.contains(safeNormalize(displayName))) {
+
+                clickOnElement(trigger, "Opened language dropdown to persist current language");
+                WebElement alreadySelected = findLanguageOption(displayName);
+                if (alreadySelected != null) {
+                    clickOnElement(alreadySelected, "Selected the given language");
+                }
+                return;
+            }
         }
-        return cookie != null ? cookie.getValue() : null;
+        WebElement language = findLanguageOption(displayName);
+        if (language == null && trigger != null) {
+            clickOnElement(trigger, "Re-clicked language selection option (retry)");
+            language = findLanguageOption(displayName);
+        }
+        if (language == null) {
+
+            if ("English".equalsIgnoreCase(displayName)
+                    || (driver.getCurrentUrl() != null
+                            && driver.getCurrentUrl().toLowerCase().contains("ui_locales=en"))) {
+                return;
+            }
+            throw new TimeoutException("Language option not found: " + displayName);
+        }
+        clickOnElement(language, "Selected the given language");
+    }
+
+    private WebElement findLanguageDropdownTrigger() {
+        for (WebElement candidate : driver.findElements(LANGUAGE_TRIGGER)) {
+            if (candidate.isDisplayed()) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private WebElement findLanguageOption(String displayName) {
+        String literal = toXpathLiteral(displayName);
+        List<By> locators = List.of(
+                By.xpath("//button[@role='option' and normalize-space()=" + literal + "]"),
+                By.xpath("//*[@role='menuitem' and normalize-space()=" + literal + "]"),
+                By.xpath("//*[contains(@class,'langDropdown') and contains(normalize-space(.),"
+                        + literal + ")]"),
+                By.xpath("//*[normalize-space()=" + literal
+                        + " and (self::button or self::div or @role='option' or @role='menuitem')]"));
+        try {
+            return new WebDriverWait(driver, Duration.ofSeconds(8)).until(d -> {
+                for (By locator : locators) {
+                    for (WebElement candidate : d.findElements(locator)) {
+                        if (candidate.isDisplayed()) {
+                            return candidate;
+                        }
+                    }
+                }
+                return null;
+            });
+        } catch (TimeoutException e) {
+            return null;
+        }
+    }
+
+    private String safeNormalize(String value) {
+        return value == null ? "" : value.replaceAll("\\s+", " ").trim().toLowerCase();
+    }
+
+    public String getLanguageFromCookie() {
+        for (String name : java.util.List.of("thunderid-i18n-language", "i18nextLng")) {
+            org.openqa.selenium.Cookie cookie = driver.manage().getCookieNamed(name);
+            if (cookie != null && cookie.getValue() != null && !cookie.getValue().isBlank()) {
+                return cookie.getValue();
+            }
+        }
+        JavascriptExecutor js = (JavascriptExecutor) driver;
+        Object stored = js.executeScript(
+                "var names = ['thunderid-i18n-language', 'i18nextLng'];"
+                        + "for (var i = 0; i < names.length; i++) {"
+                        + "  var n = names[i];"
+                        + "  try { var ls = window.localStorage.getItem(n); if (ls) return ls; } catch (e) {}"
+                        + "  try { var ss = window.sessionStorage.getItem(n); if (ss) return ss; } catch (e) {}"
+                        + "}"
+                        + "try {"
+                        + "  var cookies = document.cookie ? document.cookie.split(';') : [];"
+                        + "  for (var c = 0; c < cookies.length; c++) {"
+                        + "    var part = cookies[c].trim();"
+                        + "    for (var i = 0; i < names.length; i++) {"
+                        + "      if (part.indexOf(names[i] + '=') === 0) return decodeURIComponent(part.substring(names[i].length + 1));"
+                        + "    }"
+                        + "  }"
+                        + "} catch (e) {}"
+                        + "return null;");
+        return stored != null ? stored.toString() : null;
     }
 
     public String getNavigatorLanguage() {
@@ -66,8 +146,16 @@ public class MultiLanguagePage extends BasePage {
     }
 
     public String getDisplayedLanguageSelection() {
-        waitForElementVisible(languageSelection);
-        return languageSelection.getText().trim();
-    }
+        try {
+            new WebDriverWait(driver, Duration.ofSeconds(10)).until(d -> findLanguageDropdownTrigger() != null);
+        } catch (TimeoutException ignored) {
 
+        }
+        WebElement trigger = findLanguageDropdownTrigger();
+        if (trigger == null) {
+            waitForElementVisible(languageSelection);
+            return languageSelection.getText().trim();
+        }
+        return trigger.getText().trim();
+    }
 }

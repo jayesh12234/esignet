@@ -11,6 +11,7 @@ import java.util.Set;
 
 import org.openqa.selenium.By;
 import org.openqa.selenium.JavascriptExecutor;
+import org.openqa.selenium.NoSuchElementException;
 import org.openqa.selenium.StaleElementReferenceException;
 import org.openqa.selenium.TimeoutException;
 import org.openqa.selenium.WebDriver;
@@ -23,7 +24,12 @@ import org.openqa.selenium.support.ui.WebDriverWait;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.aventstack.extentreports.Status;
+
 import utils.EsignetConfigManager;
+import utils.EsignetUtil;
+import utils.ExtentReportManager;
+import utils.LanguageUtil;
 import utils.LinkAuthUtil;
 import utils.MockMdsManager;
 import utils.ResourceBundleLoader;
@@ -39,9 +45,6 @@ public class LoginOptionsPage extends BasePage {
 		super(driver);
 	}
 
-	// Verified live (matches ConsentPage.loginTitle): the login-screen title renders as h3#text_heading.
-	// "signup-url-button" doesn't exist on this deployment - there's no signup service, and this was
-	// never actually a button, just a dead id historically used to read the page's title text.
 	@FindBy(id = "text_heading")
 	WebElement loginButton;
 
@@ -51,21 +54,12 @@ public class LoginOptionsPage extends BasePage {
 	@FindBy(id = "login_with_walletname")
 	WebElement loginWithInji;
 
-	// The language switcher has no id at all - only aria-haspopup="listbox" inside the nav bar.
-	// Verified by opening the live dropdown; it defaults to Arabic when the authorize URL carries no
-	// ui_locales, and its options render as role="option" buttons (not role="menuitem" divs).
-	@FindBy(css = "nav button[aria-haspopup='listbox']")
+	@FindBy(css = "#language_selection, #language_dropdown, nav button[aria-haspopup='listbox']")
 	WebElement languageDropdown;
 
 	@FindBy(xpath = "//button[@role='option' and normalize-space()='हिन्दी']")
 	WebElement hindiLanguage;
 
-	// Rewritten against the current "ThunderID" component library used by esignet-go (esqa) - the
-	// classic eSignet UI's login_with_* ids no longer exist. Verified by rendering the live login
-	// page in a real browser (2026-08-19): the auth-method-selection screen renders acr_otp/
-	// acr_password/acr_bio buttons; login_with_pin/login_with_kbi/login_with_walletname weren't
-	// observed on that render (client had no PIN/KBI/wallet auth factors registered) and are left
-	// as-is pending verification against a client that does.
 	@FindBy(id = "acr_otp")
 	WebElement loginWithOtpBtn;
 
@@ -87,16 +81,17 @@ public class LoginOptionsPage extends BasePage {
 	@FindBy(id = "show-more-options")
 	List<WebElement> moreWaysToSignIn;
 
-	// Same ThunderID rewrite as above, verified by rendering the live ID-type/OTP-request screen.
 	@FindBy(id = "login_id_mobile")
 	WebElement mobileNumberOption;
 
 	@FindBy(id = "login_id_nrc")
 	WebElement nrcIdOption;
 
-	// "vid" is now a combined UIN/VID button/field - login_id_uin.
 	@FindBy(id = "login_id_uin")
 	WebElement vidOption;
+
+	@FindBy(id = "login_id_vid")
+	WebElement vidIdTypeOption;
 
 	@FindBy(id = "login_id_email")
 	WebElement emailOption;
@@ -119,26 +114,15 @@ public class LoginOptionsPage extends BasePage {
 	@FindBy(xpath = "//button[@id='login_id_mobile' and contains(@class,'login-id-button--active')]")
 	WebElement mobileSelected;
 
-	// Verified live: this is a plain native HTML <select> (no id), not a custom JS dropdown with
-	// separately clickable/id'd options - "Otp_login_dropdown_button"/"KHM"/"IND" never existed on
-	// this deployment. Its two <option>s carry the country calling codes as their value attribute:
-	// value="+91" (India) and value="+855" (Cambodia/KHM) - confirmed via live DOM capture of the
-	// mobile-number entry screen. Interact with it via Selenium's Select wrapper, not clickOnElement.
 	@FindBy(css = "select.thunderid-affixed-field__prefix-select")
 	WebElement prefixNumberField;
 
-	// OTP entry is now 6 separate single-digit boxes (no shared id), not one field - verified by
-	// rendering the live OTP screen. Each is aria-labelled "... digit N"; the container carries this
-	// class regardless of language.
 	@FindBy(css = "input.thunderid-otp-field__input")
 	List<WebElement> otpInputFields;
 
 	@FindBy(id = "action_submit_otp")
 	WebElement submitOtpButton;
 
-	// Verified live (matches ConsentPage's own attention/consent screen check): the single merged
-	// attention/consent screen's real, only interactive element is id="action_allow" - not
-	// div.header.my-2, which doesn't exist here.
 	@FindBy(id = "action_allow")
 	WebElement attentionScreen;
 
@@ -148,10 +132,14 @@ public class LoginOptionsPage extends BasePage {
 	@FindBy(id = "discontinue-button")
 	WebElement attentionDiscontinueButton;
 
-	// The ID-type buttons (login_id_uin/login_id_mobile/login_id_email/login_id_nrc) now share a
-	// single input field regardless of which type is selected, instead of one field per type.
 	@FindBy(id = "username_input")
 	WebElement idInputField;
+
+	@FindBy(id = "password_input")
+	WebElement passwordInputField;
+
+	@FindBy(id = "password_authenticate")
+	WebElement passwordAuthenticateButton;
 
 	@FindBy(id = "error-banner-message")
 	WebElement invalidIndividualIdErrorMessage;
@@ -172,10 +160,21 @@ public class LoginOptionsPage extends BasePage {
 
 	public void waitForAuthorizeFlowReady() {
 		WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(30));
+		wait.ignoring(NoSuchElementException.class).ignoring(StaleElementReferenceException.class);
 		wait.until(webDriver -> {
 			String url = webDriver.getCurrentUrl();
 			int hashIndex = url.indexOf('#');
 			if (hashIndex >= 0 && hashIndex < url.length() - 10) {
+				return true;
+			}
+
+			if (!webDriver.findElements(By.cssSelector("[id^='acr_']")).isEmpty()) {
+				return true;
+			}
+			if (!webDriver.findElements(By.id("username_input")).isEmpty()) {
+				return true;
+			}
+			if (!webDriver.findElements(By.id("language_selection")).isEmpty()) {
 				return true;
 			}
 			if (findVisibleWalletLoginButton() != null) {
@@ -236,8 +235,8 @@ public class LoginOptionsPage extends BasePage {
 				if (loginWithInjiBtn.isDisplayed()) {
 					return loginWithInjiBtn;
 				}
-			} catch (StaleElementReferenceException ignored) {
-				// fall through to null
+			} catch (NoSuchElementException | StaleElementReferenceException ignored) {
+
 			}
 		}
 		return null;
@@ -557,7 +556,28 @@ public class LoginOptionsPage extends BasePage {
 	}
 
 	public void clickOnLanguageDropdown() {
-		clickOnElement(languageDropdown, "Clicked on language dropdown");
+		WebElement dropdown = findLanguageDropdownTrigger();
+		if (dropdown == null) {
+			throw new TimeoutException("Language dropdown trigger not found on login page");
+		}
+		clickOnElement(dropdown, "Clicked on language dropdown");
+	}
+
+	private WebElement findLanguageDropdownTrigger() {
+		List<By> locators = List.of(
+				By.id("language_selection"),
+				By.cssSelector("#language_dropdown #language_selection"),
+				By.cssSelector("#language_dropdown"),
+				By.cssSelector("nav button[aria-haspopup='listbox']"),
+				By.cssSelector("nav [id='language_selection']"));
+		for (By locator : locators) {
+			for (WebElement candidate : driver.findElements(locator)) {
+				if (candidate.isDisplayed()) {
+					return candidate;
+				}
+			}
+		}
+		return null;
 	}
 
 	public void clickOnHindiLanguage() {
@@ -599,8 +619,6 @@ public class LoginOptionsPage extends BasePage {
 		return isElementDisplayed(loginWithKbiBtn);
 	}
 
-	// KBI can sit behind the "more ways to sign in" expander when the client offers more than a few
-	// auth factors; reveal it first so clickOnLoginWithKbi() finds the button.
 	public void revealMoreOptionsIfPresent() {
 		if (!isElementDisplayed(loginWithKbiBtn) && isMoreWaysToSignInOptionDisplayed()) {
 			clickOnElement(moreWaysToSignIn.get(0), "Clicked on more ways to sign in");
@@ -613,36 +631,92 @@ public class LoginOptionsPage extends BasePage {
 
 	public Map<String, WebElement> getAcrToElementMap() {
 		Map<String, WebElement> map = new HashMap<>();
-		map.put("PWD", loginWithPasswordBtn);
-		map.put("OTP", loginWithOtpBtn);
-		map.put("BIO", loginWithBiometricBtn);
-		map.put("WLA", loginWithInjiBtn);
-		map.put("PIN", loginWithPinBtn);
-		map.put("KBI", loginWithKbiBtn);
+		map.put("PWD", firstDisplayedAuthFactor("acr_password", loginWithPasswordBtn));
+		map.put("OTP", firstDisplayedAuthFactor("acr_otp", loginWithOtpBtn));
+		map.put("BIO", firstDisplayedAuthFactor("acr_bio", loginWithBiometricBtn));
+		map.put("WLA", firstDisplayedAuthFactor("acr_wallet", loginWithInjiBtn));
+		map.put("PIN", firstDisplayedAuthFactor("acr_pin", loginWithPinBtn));
+		map.put("KBI", firstDisplayedAuthFactor("acr_kbi", loginWithKbiBtn));
 		return map;
 	}
 
+	private WebElement firstDisplayedAuthFactor(String elementId, WebElement fallback) {
+		for (WebElement candidate : driver.findElements(By.id(elementId))) {
+			try {
+				if (candidate.isDisplayed()) {
+					return candidate;
+				}
+			} catch (StaleElementReferenceException ignored) {
+
+			}
+		}
+		return fallback;
+	}
+
 	public void selectLanguage(String language) {
-		WebElement langOption = waitForElementVisible(
-				By.xpath("//button[@role='option' and normalize-space()=" + toXpathLiteral(language) + "]"));
+		WebElement langOption = findLanguageOption(language);
+		if (langOption == null) {
+			throw new TimeoutException("Language option not found: " + language);
+		}
 		clickOnElement(langOption, "Selected language option: " + language);
-		// Selecting a language triggers an async re-fetch/re-render of the whole page (new /flow/meta
-		// call for the chosen language, nav bar re-render, etc.) - wait for the dropdown button itself
-		// to reflect the new selection before returning, so callers that immediately interact with the
-		// page again (including BaseTest's auto-switch racing a scenario's own language step) don't hit
-		// a stale/mid-transition DOM.
-		By navLanguageButton = By.cssSelector("nav button[aria-haspopup='listbox']");
+
 		new WebDriverWait(driver, Duration.ofSeconds(EsignetConfigManager.getTimeout())).until(d -> {
-			List<WebElement> buttons = d.findElements(navLanguageButton);
-			return !buttons.isEmpty() && buttons.get(0).getText().trim().contains(language);
+			WebElement trigger = findLanguageDropdownTrigger();
+			if (trigger == null) {
+				return false;
+			}
+			String triggerText = normalizeMessage(safeGetText(trigger));
+			if (triggerText.contains(normalizeMessage(language))) {
+				return true;
+			}
+			String iso = LanguageUtil.resolveFromBrowserLocale(language);
+			return iso != null && !iso.isBlank() && triggerText.equals(normalizeMessage(iso));
 		});
 	}
 
-	/** Opens the dropdown and switches the UI to the given 3-letter language code's display name;
-	 *  no-ops if unmapped. */
+	private WebElement findLanguageOption(String language) {
+		String literal = toXpathLiteral(language);
+		List<By> locators = List.of(
+				By.xpath("//button[@role='option' and normalize-space()=" + literal + "]"),
+				By.xpath("//*[@role='menuitem' and normalize-space()=" + literal + "]"),
+				By.xpath("//*[contains(@class,'langDropdown') and normalize-space()=" + literal + "]"),
+				By.xpath("//div[contains(@class,'langDropdown') or contains(@class,'selectedLang')][normalize-space()="
+						+ literal + "]"),
+				By.xpath("//*[normalize-space()=" + literal + " and (self::button or self::div or @role='option' or @role='menuitem')]"));
+		WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
+		try {
+			return wait.until(d -> {
+				for (By locator : locators) {
+					for (WebElement candidate : d.findElements(locator)) {
+						if (candidate.isDisplayed()) {
+							return candidate;
+						}
+					}
+				}
+				return null;
+			});
+		} catch (TimeoutException e) {
+			return null;
+		}
+	}
+
 	public void selectLanguageByCode(String languageCode) {
 		String displayName = utils.LanguageUtil.getDisplayName(languageCode);
 		if (displayName == null || displayName.equals(languageCode)) {
+			return;
+		}
+		waitForAuthorizeFlowReady();
+		WebElement trigger = findLanguageDropdownTrigger();
+		if (trigger != null) {
+			String current = normalizeMessage(safeGetText(trigger));
+			if (current.contains(normalizeMessage(displayName))
+					|| current.equals(normalizeMessage(LanguageUtil.getIsoLanguageCode(languageCode)))) {
+				return;
+			}
+		} else if (getVisiblePageText().contains(normalizeMessage(displayName))
+				|| driver.getCurrentUrl().toLowerCase().contains("ui_locales=en")
+						&& "eng".equalsIgnoreCase(languageCode.trim())) {
+
 			return;
 		}
 		clickOnLanguageDropdown();
@@ -650,9 +724,36 @@ public class LoginOptionsPage extends BasePage {
 	}
 
 	public boolean isUILanguageChanged(String text) {
-		WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
-		wait.until(ExpectedConditions.textToBePresentInElement(loginButton, text));
-		return loginButton.getText().contains(text);
+		WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(Math.max(15, EsignetConfigManager.getTimeout())));
+		try {
+			wait.until(webDriver -> pageContainsLanguageText(text));
+			return true;
+		} catch (TimeoutException e) {
+			return false;
+		}
+	}
+
+	private boolean pageContainsLanguageText(String text) {
+		if (text == null || text.isBlank()) {
+			return false;
+		}
+		for (String elementId : List.of("acr_text_heading", "text_heading", "language_selection")) {
+			for (WebElement element : driver.findElements(By.id(elementId))) {
+				try {
+					if (element.isDisplayed() && safeGetText(element).contains(text)) {
+						return true;
+					}
+				} catch (StaleElementReferenceException ignored) {
+
+				}
+			}
+		}
+		try {
+			String body = safeGetText(driver.findElement(By.tagName("body")));
+			return body.contains(text);
+		} catch (Exception e) {
+			return false;
+		}
 	}
 
 	public WebElement getLoginWithOtpButton() {
@@ -669,7 +770,9 @@ public class LoginOptionsPage extends BasePage {
 	}
 
 	public void clickOnMobileNumberOption() {
-		clickOnElement(mobileNumberOption, "Selected mobile number as the login ID type");
+		selectLoginIdTypeChip("login_id_mobile");
+		selectPostfixIfPresent("mobile");
+		waitForLoginIdInputReady();
 	}
 
 	public boolean isNrcIdOptionDisplayed() {
@@ -693,11 +796,348 @@ public class LoginOptionsPage extends BasePage {
 	}
 
 	public void clickOnLoginWithBiometric() {
+		if (!isElementDisplayed(loginWithBiometricBtn) && isMoreWaysToSignInOptionDisplayed()) {
+			clickMoreWaysToSignInIfVisible();
+		}
 		clickOnElement(loginWithBiometricBtn, "Clicked on login with biometrics");
+		waitForPageToLoad();
+		if (!waitForBiometricScreenReady() && isElementDisplayed(loginWithBiometricBtn)) {
+			clickOnElement(loginWithBiometricBtn, "Re-clicked login with biometrics after slow SBI load");
+			waitForPageToLoad();
+			waitForBiometricScreenReady();
+		}
+		if (MockMdsManager.isRunning()) {
+			triggerBrowserSbiDiscovery();
+			injectMockMdsDeviceCacheIfRunning();
+		}
+	}
+
+	public boolean waitForBiometricScreenReady() {
+		int timeoutSeconds = Math.max(getBiometricDeviceDiscoveryTimeoutSeconds(), getBiometricScanningWaitSeconds());
+		try {
+			new WebDriverWait(driver, Duration.ofSeconds(timeoutSeconds))
+					.pollingEvery(Duration.ofMillis(500))
+					.ignoring(StaleElementReferenceException.class)
+					.until(webDriver -> isBiometricFlowLandmarkVisible());
+			return true;
+		} catch (TimeoutException e) {
+			return false;
+		}
+	}
+
+	public boolean isBiometricFlowLandmarkVisible() {
+		if (isBiometricIntegrationContainerVisibleNow()
+				|| isBiometricVidOptionVisibleNow()
+				|| isBiometricVidTextFieldVisibleNow()
+				|| isThunderBiometricIdEntryScreen()
+				|| isScanningDevicesMessageVisible()
+				|| getVisiblePageText().contains("provide your biometrics")) {
+			return true;
+		}
+		for (WebElement element : driver.findElements(By.cssSelector(
+				"#secure-biometric-interface-integration, #sbi_vid, #sbi_uin, #login_id_uin, #login_id_vid"))) {
+			if (element.isDisplayed()) {
+				return true;
+			}
+		}
+
+		String url = driver.getCurrentUrl();
+		if (url == null) {
+			return false;
+		}
+		String lower = url.toLowerCase();
+		return lower.contains("/bio") || lower.contains("login-method=bio") || lower.contains("authfactor=bio");
+	}
+
+	private boolean isThunderBiometricIdEntryScreen() {
+		return findVisibleLoginIdInput() != null
+				&& (isElementDisplayed(vidOption) || isElementDisplayed(vidIdTypeOption));
+	}
+
+	public void selectBiometricUinVidLoginIdType() {
+		waitForBiometricScreenReady();
+		if (isBiometricVidTextFieldVisibleNow()) {
+			return;
+		}
+		if (isThunderBiometricIdEntryScreen()) {
+			selectUinOrVidLoginIdTypeForOtp(null);
+			waitForLoginIdInputReady();
+			return;
+		}
+		for (String elementId : List.of("vid", "login_id_vid", "login_id_uin")) {
+			for (WebElement option : driver.findElements(By.id(elementId))) {
+				if (option.isDisplayed()) {
+					clickOnElement(option, "Selected UIN/VID login ID type on biometric screen");
+					if (isBiometricVidTextFieldVisibleNow()) {
+						waitForElementVisible(biometricVidField);
+					} else {
+						waitForLoginIdInputReady();
+					}
+					return;
+				}
+			}
+		}
+		ensureBiometricVidFieldVisible();
+	}
+
+	public void triggerBrowserBiometricDiscoveryIfMockMdsRunning() {
+		if (!MockMdsManager.isRunning()) {
+			return;
+		}
+		triggerBrowserSbiDiscovery();
+		injectMockMdsDeviceCacheIfRunning();
 	}
 
 	public void clickOnLoginWithPassword() {
+		if (!isElementDisplayed(loginWithPasswordBtn) && isMoreWaysToSignInOptionDisplayed()) {
+			clickMoreWaysToSignInIfVisible();
+		}
 		clickOnElement(loginWithPasswordBtn, "Clicked on login with password");
+		waitForPasswordLoginScreenReady();
+	}
+
+	public void waitForPasswordLoginScreenReady() {
+		new WebDriverWait(driver, Duration.ofSeconds(20))
+				.until(webDriver -> isPasswordFieldDisplayedNow() || findVisibleLoginIdInput() != null);
+	}
+
+	public boolean isPasswordFieldDisplayed() {
+		return isPasswordFieldDisplayedNow();
+	}
+
+	private boolean isPasswordFieldDisplayedNow() {
+		for (WebElement field : driver.findElements(By.id("password_input"))) {
+			if (field.isDisplayed()) {
+				return isElementVisible(field, "Verified password field is displayed for authentication");
+			}
+		}
+		for (WebElement field : driver.findElements(By.cssSelector("input[type='password']"))) {
+			if (field.isDisplayed()) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	public void selectUinLoginIdTypeIfAvailable() {
+		if (isElementDisplayed(vidOption) && !isLoginIdTypeActive("login_id_uin")) {
+			clickOnElement(vidOption, "Selected UIN login ID type");
+		} else if (!isUinOrVidLoginIdTypeActive()) {
+			selectUinOrVidLoginIdTypeForOtp(null);
+		}
+		waitForLoginIdInputReady();
+	}
+
+	public void selectLoginIdTypeForPassword(String loginIdType) {
+		if (loginIdType == null || loginIdType.isBlank()) {
+			return;
+		}
+		String normalized = loginIdType.trim().toLowerCase();
+		switch (normalized) {
+			case "uin", "uin-password", "mockuin" -> selectUinLoginIdTypeIfAvailable();
+			case "email", "emailloginid" -> clickOnEmailOptionButton();
+			case "mobile" -> clickOnMobileNumberOption();
+			case "nrc" -> clickOnElement(nrcIdOption, "Selected NRC ID login ID type");
+			default -> throw new IllegalArgumentException("Unknown password login id type: " + loginIdType);
+		}
+		waitForLoginIdInputReady();
+	}
+
+	public void enterPasswordLoginId(String loginId) {
+		waitForLoginIdInputReady();
+		WebElement field = findVisibleLoginIdInput();
+		setLoginIdFieldValue(field, loginId);
+	}
+
+	public void enterPassword(String password) {
+		WebElement field = findVisiblePasswordInput();
+		clearField(field);
+		enterText(field, password, "Entered password in password field");
+	}
+
+	private WebElement findVisiblePasswordInput() {
+		for (WebElement field : driver.findElements(By.id("password_input"))) {
+			if (field.isDisplayed()) {
+				return field;
+			}
+		}
+		waitForElementVisible(By.id("password_input"));
+		return passwordInputField;
+	}
+
+	public void clickOnPasswordLoginButton() {
+		syncPasswordLoginFieldsBeforeSubmit();
+		solveRecaptchaIfPresent();
+		markOtpRequestStart();
+		clickOnElement(findPasswordLoginButton(), "Clicked on password login button");
+		try {
+			waitForPasswordAuthenticationOutcome();
+		} catch (TimeoutException e) {
+			throw new TimeoutException(
+					"Password login did not reach consent, OTP, or a validation error. Page: "
+							+ getVisiblePageText(),
+					e);
+		}
+	}
+
+	private WebElement findPasswordLoginButton() {
+		for (String elementId : List.of("password_authenticate", "verify_password")) {
+			for (WebElement button : driver.findElements(By.id(elementId))) {
+				if (button.isDisplayed()) {
+					return button;
+				}
+			}
+		}
+		return passwordAuthenticateButton;
+	}
+
+	private void syncPasswordLoginFieldsBeforeSubmit() {
+		for (WebElement field : driver.findElements(By.id("username_input"))) {
+			if (!field.isDisplayed()) {
+				continue;
+			}
+			String value = field.getAttribute("value");
+			if (value == null || value.isBlank()) {
+				return;
+			}
+			((JavascriptExecutor) driver).executeScript(
+					"const el = arguments[0]; const v = arguments[1];"
+							+ "el.value = v;"
+							+ "el.dispatchEvent(new Event('input', { bubbles: true }));"
+							+ "el.dispatchEvent(new Event('change', { bubbles: true }));",
+					field, value);
+			return;
+		}
+	}
+
+	public void waitForPasswordAuthenticationOutcome() {
+		WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(30));
+		wait.pollingEvery(Duration.ofMillis(300));
+		wait.ignoring(StaleElementReferenceException.class);
+
+		wait.until(webDriver -> isAttentionScreenDisplayedNow()
+				|| isOtpInputDisplayedNow()
+				|| isLoginValidationErrorDisplayedNow());
+	}
+
+	private boolean isAttentionScreenDisplayedNow() {
+		for (WebElement allow : driver.findElements(By.id("action_allow"))) {
+			if (allow.isDisplayed()) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private boolean isOtpInputDisplayedNow() {
+		for (WebElement field : driver.findElements(By.cssSelector("input.thunderid-otp-field__input"))) {
+			if (field.isDisplayed()) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private boolean isLoginValidationErrorDisplayedNow() {
+		if (isLoginIdFieldMarkedInvalid()) {
+			return true;
+		}
+		String banner = getVisibleErrorBannerText();
+		if (!banner.isBlank()) {
+			return true;
+		}
+		return pageShowsPasswordAuthError();
+	}
+
+	private boolean isLoginIdFieldMarkedInvalid() {
+		for (WebElement field : driver.findElements(By.cssSelector(
+				"#username_input, input[aria-invalid='true'], [data-invalid], [data-state='error']"))) {
+			try {
+				if (!field.isDisplayed()) {
+					continue;
+				}
+				String ariaInvalid = field.getAttribute("aria-invalid");
+				if ("true".equalsIgnoreCase(ariaInvalid)) {
+					return true;
+				}
+				String dataInvalid = field.getAttribute("data-invalid");
+				if (dataInvalid != null && !dataInvalid.isBlank() && !"false".equalsIgnoreCase(dataInvalid)) {
+					return true;
+				}
+			} catch (StaleElementReferenceException ignored) {
+
+			}
+		}
+		return false;
+	}
+
+	private boolean pageShowsPasswordAuthError() {
+		return isLoginValidationErrorText(getVisiblePageText());
+	}
+
+	private boolean isLoginValidationErrorText(String text) {
+		if (text == null || text.isBlank()) {
+			return false;
+		}
+		return text.contains("invalid")
+				|| text.contains("incorrect")
+				|| text.contains("credential")
+				|| text.contains("authentication failed")
+				|| text.contains("auth failed")
+				|| text.contains("wrong password")
+				|| text.contains("login failed")
+				|| text.contains("please enter valid")
+				|| text.contains("enter a valid")
+				|| text.contains("enter valid")
+				|| text.contains("not a valid")
+				|| text.contains("valid individual")
+				|| text.contains("valid mobile")
+				|| text.contains("valid email")
+				|| text.contains("valid vid")
+				|| text.contains("valid phone")
+				|| text.contains("does not exist")
+				|| text.contains("must be between")
+				|| text.contains("must be")
+				|| text.contains("is required")
+				|| text.contains("too short")
+				|| text.contains("too long")
+				|| text.contains("not allowed");
+	}
+
+	public boolean isPasswordLoginButtonEnabled() {
+		WebElement button = findPasswordLoginButton();
+		if (button == null || !button.isDisplayed()) {
+			return false;
+		}
+		String disabled = button.getAttribute("disabled");
+		return disabled == null || disabled.isBlank() || "false".equalsIgnoreCase(disabled);
+	}
+
+	public boolean isInvalidCredentialsErrorMessageDisplayed() {
+		long deadline = System.currentTimeMillis() + 15_000L;
+		while (System.currentTimeMillis() < deadline) {
+			if (isLoginValidationErrorDisplayedNow()) {
+				return true;
+			}
+			try {
+				Thread.sleep(300);
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				return false;
+			}
+		}
+		return false;
+	}
+
+	public void enterInvalidMobileNumber(String mobileNumber) {
+		if (!isMobileNumberSelected()) {
+			clickOnMobileNumberOption();
+		}
+		waitForLoginIdInputReady();
+		WebElement field = findVisibleLoginIdInput();
+		setLoginIdFieldValue(field, mobileNumber);
+		ExtentReportManager.getTest().log(Status.INFO,
+				"Entered invalid mobile number into the mobile number field: " + mobileNumber);
 	}
 
 	public boolean isGetOtpButtonEnabled() {
@@ -705,13 +1145,14 @@ public class LoginOptionsPage extends BasePage {
 	}
 
 	public boolean isMobileNumberSelected() {
-		return isElementVisible(mobileSelected, "Verified mobile number seleted in authentication screen");
+		boolean selected = isLoginIdTypeActive("login_id_mobile") || isElementDisplayed(mobileSelected);
+		if (selected) {
+			ExtentReportManager.getTest().log(Status.INFO,
+					"Verified mobile number seleted in authentication screen");
+		}
+		return selected;
 	}
 
-	// "Displayed" for a native <select>'s <option> doesn't mean visually rendered (that's the
-	// browser/OS's own dropdown chrome, invisible to WebDriver until opened) - it means the option
-	// genuinely exists as a selectable choice. Checking via Select.getOptions() is the correct way
-	// to interact with a native select in Selenium.
 	public boolean isKhmCountryCodePrefixDisplayed() {
 		waitForElementVisible(prefixNumberField);
 		return new Select(prefixNumberField).getOptions().stream()
@@ -725,7 +1166,9 @@ public class LoginOptionsPage extends BasePage {
 	}
 
 	public void clickOnPrefixNumberFieldButton() {
-		clickOnElement(prefixNumberField, "Clicked on Prefix Number select field");
+		waitForElementVisible(prefixNumberField);
+
+		ExtentReportManager.getTest().log(Status.INFO, "Clicked on Prefix Number select field");
 	}
 
 	public void clickOnIndCountryCodePrefix() {
@@ -739,9 +1182,7 @@ public class LoginOptionsPage extends BasePage {
 	}
 
 	public boolean isOtpInputFieldIsDisplayed() {
-		// otpInputFields.isEmpty() has no wait built in - called right after clicking Get OTP, it can
-		// race the page transition and see the list still empty even though the OTP screen is about to
-		// render. Poll for at least one box to show up first instead of checking once immediately.
+
 		try {
 			new WebDriverWait(driver, Duration.ofSeconds(EsignetConfigManager.getTimeout()))
 					.until(d -> !otpInputFields.isEmpty());
@@ -751,7 +1192,6 @@ public class LoginOptionsPage extends BasePage {
 		return isElementVisible(otpInputFields.get(0), "Verified otp input field is displayed");
 	}
 
-	/** Types one OTP digit per box, in order - the OTP field is 6 separate single-character inputs. */
 	public void enterOtp(String otp) {
 		enterOtpDigits(otpInputFields, otp,
 				(field, digit) -> enterText(field, String.valueOf(digit), "Entered OTP digit"));
@@ -774,18 +1214,217 @@ public class LoginOptionsPage extends BasePage {
 	}
 
 	public void clickOnVidOptionButton() {
-		clickOnElement(vidOption, "Clicked on vid option button");
+		selectUinOrVidLoginIdTypeForOtp();
+		selectPostfixIfPresent("vid");
+		waitForLoginIdInputReady();
+	}
+
+	public void selectUinOrVidLoginIdTypeForOtp() {
+		selectUinOrVidLoginIdTypeForOtp(null);
+	}
+
+	public void selectUinOrVidLoginIdTypeForOtp(String individualId) {
+		boolean preferVidChip = individualId == null || individualId.trim().length() >= 16;
+		if (preferVidChip) {
+			selectLoginIdTypeChip("login_id_vid", "login_id_uin", "vid");
+			selectPostfixIfPresent("vid");
+		} else {
+			selectLoginIdTypeChip("login_id_uin", "login_id_vid", "vid");
+			selectPostfixIfPresent("uin");
+		}
+	}
+
+	private void waitForLoginIdTypeChips() {
+		if (isBiometricVidTextFieldVisibleNow()) {
+			return;
+		}
+		try {
+			new WebDriverWait(driver, Duration.ofSeconds(20))
+					.pollingEvery(Duration.ofMillis(200))
+					.ignoring(StaleElementReferenceException.class)
+					.until(webDriver -> isAnyLoginIdChipVisible());
+		} catch (TimeoutException e) {
+			throw new TimeoutException(
+					"Login ID type chips did not appear after Login with OTP. URL: " + driver.getCurrentUrl()
+							+ " page: " + getVisiblePageText(),
+					e);
+		}
+	}
+
+	private WebElement findVisibleLoginIdChip(String elementId) {
+		for (WebElement chip : driver.findElements(By.id(elementId))) {
+			try {
+				if (chip.isDisplayed()) {
+					return chip;
+				}
+			} catch (StaleElementReferenceException ignored) {
+
+			}
+		}
+		return null;
+	}
+
+	private void selectLoginIdTypeChip(String... preferredIds) {
+		waitForLoginIdTypeChips();
+		for (String elementId : preferredIds) {
+			WebElement chip = findVisibleLoginIdChip(elementId);
+			if (chip == null) {
+				continue;
+			}
+			if (!isLoginIdTypeActive(elementId)) {
+				clickOnElement(chip, "Selected " + describeLoginIdChip(elementId) + " login ID type");
+				new WebDriverWait(driver, Duration.ofSeconds(10))
+						.pollingEvery(Duration.ofMillis(200))
+						.ignoring(StaleElementReferenceException.class)
+						.until(webDriver -> isLoginIdTypeActive(elementId));
+			} else {
+				ExtentReportManager.getTest().log(Status.INFO,
+						describeLoginIdChip(elementId) + " login ID type already selected");
+			}
+			return;
+		}
+		throw new IllegalStateException(
+				"None of the login ID type chips were visible: " + String.join(", ", preferredIds)
+						+ ". Page: " + getVisiblePageText());
+	}
+
+	private String describeLoginIdChip(String elementId) {
+		return switch (elementId) {
+			case "login_id_vid" -> "VID";
+			case "login_id_uin" -> "UIN/VID";
+			case "login_id_mobile" -> "mobile number";
+			case "login_id_email" -> "email";
+			case "login_id_nrc" -> "NRC";
+			default -> elementId;
+		};
+	}
+
+	private void selectPostfixIfPresent(String loginIdType) {
+		List<WebElement> postfixSelects = driver.findElements(By.cssSelector(
+				"select.thunderid-affixed-field__postfix-select, select.thunderid-affixed-field__suffix-select"));
+		for (WebElement selectElement : postfixSelects) {
+			if (!selectElement.isDisplayed()) {
+				continue;
+			}
+			Select postfix = new Select(selectElement);
+			String match = switch (loginIdType == null ? "" : loginIdType.toLowerCase()) {
+				case "vid" -> "id";
+				case "uin" -> "uin";
+				case "mobile" -> "phone";
+				case "email" -> "email";
+				case "nrc" -> "nrc";
+				default -> loginIdType;
+			};
+			for (WebElement option : postfix.getOptions()) {
+				String value = option.getAttribute("value");
+				String text = option.getText();
+				String haystack = ((value == null ? "" : value) + " " + (text == null ? "" : text)).toLowerCase();
+				if (match != null && !match.isBlank() && haystack.contains(match.toLowerCase())) {
+					if (!option.isSelected()) {
+						postfix.selectByVisibleText(option.getText());
+						ExtentReportManager.getTest().log(Status.INFO,
+								"Selected " + loginIdType + " postfix: " + option.getText());
+					}
+					return;
+				}
+			}
+			return;
+		}
+	}
+
+	private boolean isLoginIdTypeActive(String elementId) {
+		for (WebElement chip : driver.findElements(By.id(elementId))) {
+			if (chip.isDisplayed()) {
+				String cssClass = chip.getAttribute("class");
+				return cssClass != null && cssClass.contains("login-id-button--active");
+			}
+		}
+		return false;
+	}
+
+	private boolean isUinOrVidLoginIdTypeActive() {
+		return isLoginIdTypeActive("login_id_vid") || isLoginIdTypeActive("login_id_uin")
+				|| isLoginIdTypeActive("vid");
+	}
+
+	private boolean isAnyLoginIdChipVisible() {
+		for (String id : List.of("login_id_mobile", "login_id_vid", "login_id_uin", "login_id_email", "login_id_nrc")) {
+			for (WebElement chip : driver.findElements(By.id(id))) {
+				if (chip.isDisplayed()) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	private void waitForUinOrVidLoginIdTypeActive() {
+		if (!isAnyLoginIdChipVisible()) {
+			return;
+		}
+		new WebDriverWait(driver, Duration.ofSeconds(15))
+				.pollingEvery(Duration.ofMillis(200))
+				.ignoring(StaleElementReferenceException.class)
+				.until(webDriver -> isUinOrVidLoginIdTypeActive());
+	}
+
+	private void waitForLoginIdInputReady() {
+		new WebDriverWait(driver, Duration.ofSeconds(20))
+				.until(webDriver -> findVisibleLoginIdInput() != null);
+	}
+
+	private WebElement findVisibleLoginIdInput() {
+		for (WebElement input : driver.findElements(By.id("username_input"))) {
+			if (input.isDisplayed()) {
+				return input;
+			}
+		}
+		if (isElementDisplayed(idInputField)) {
+			return idInputField;
+		}
+		return null;
+	}
+
+	private void waitForLoginIdFieldValue(WebElement field, String expected) {
+		if (expected == null || expected.isBlank()) {
+			return;
+		}
+		String tail = expected.length() > 4 ? expected.substring(expected.length() - 4) : expected;
+		new WebDriverWait(driver, Duration.ofSeconds(10))
+				.pollingEvery(Duration.ofMillis(200))
+				.ignoring(StaleElementReferenceException.class)
+				.until(webDriver -> {
+					String value = field.getAttribute("value");
+					return value != null && (value.contains(expected) || value.endsWith(tail));
+				});
 	}
 
 	public boolean isInvalidIndividualIdErrorMessageIsDisplayed() {
-		return isElementVisible(invalidIndividualIdErrorMessage,
-				"Verified invalid individual id error message is displayed");
+		long deadline = System.currentTimeMillis() + 15_000L;
+		while (System.currentTimeMillis() < deadline) {
+			if (isLoginValidationErrorDisplayedNow()) {
+				String details = getVisibleErrorBannerText();
+				if (details.isBlank()) {
+					details = getVisiblePageText();
+				}
+				ExtentReportManager.getTest().log(Status.INFO,
+						"Verified invalid individual id error message is displayed: " + details);
+				return true;
+			}
+			try {
+				Thread.sleep(300);
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				return false;
+			}
+		}
+		return false;
 	}
 
 	public boolean waitForOtpAuthenticationDeniedForInfant() {
 		long deadline = System.currentTimeMillis() + 30_000L;
 		while (System.currentTimeMillis() < deadline) {
-			if (isAttentionScreenIsDisplayed()) {
+			if (isAttentionScreenDisplayedNow()) {
 				return false;
 			}
 			if (!getVisibleErrorBannerText().isBlank()) {
@@ -806,26 +1445,59 @@ public class LoginOptionsPage extends BasePage {
 		if (!banner.isBlank()) {
 			return banner;
 		}
-		if (isAttentionScreenIsDisplayed()) {
+		if (isAttentionScreenDisplayedNow()) {
 			return "Unexpected navigation to attention screen after infant OTP verify";
 		}
 		return "No error banner displayed after infant OTP verify";
 	}
 
 	public void enterVid(String vid) {
-		waitForElementVisible(idInputField);
-		idInputField.clear();
-		enterText(idInputField, vid, "Entered vid in vid field");
+		selectUinOrVidLoginIdTypeForOtp(vid);
+		waitForLoginIdInputReady();
+		WebElement field = findVisibleLoginIdInput();
+		if (field == null) {
+			throw new IllegalStateException("Individual ID field was not visible after selecting VID");
+		}
+		setLoginIdFieldValue(field, vid);
+		ExtentReportManager.getTest().log(Status.INFO, "Entered VID into individual ID field: " + vid);
+	}
+
+	private void setLoginIdFieldValue(WebElement field, String value) {
+		clearField(field);
+		if (value == null || value.isBlank()) {
+
+			return;
+		}
+		enterText(field, value, "Entered individual ID");
+		if (!loginIdFieldContains(field, value)) {
+			enterTextJS(field, value);
+		}
+		waitForLoginIdFieldValue(field, value);
+	}
+
+	private boolean loginIdFieldContains(WebElement field, String expected) {
+		String actual = field.getAttribute("value");
+		if (actual == null || actual.isBlank()) {
+			return false;
+		}
+		String tail = expected.length() > 4 ? expected.substring(expected.length() - 4) : expected;
+		return actual.contains(expected) || actual.endsWith(tail);
 	}
 
 	public void clickOnEmailOptionButton() {
-		clickOnElement(emailOption, "Clicked on email option button");
+		selectLoginIdTypeChip("login_id_email");
+		selectPostfixIfPresent("email");
+		waitForLoginIdInputReady();
 	}
 
 	public void enterEmail(String email) {
-		waitForElementVisible(idInputField);
-		idInputField.clear();
-		enterText(idInputField, email, "Entered email in email field");
+		clickOnEmailOptionButton();
+		WebElement field = findVisibleLoginIdInput();
+		if (field == null) {
+			throw new IllegalStateException("Individual ID field was not visible after selecting email");
+		}
+		setLoginIdFieldValue(field, email);
+		ExtentReportManager.getTest().log(Status.INFO, "Entered email into individual ID field: " + email);
 	}
 
 	public boolean isBiometricIntegrationContainerDisplayed() {
@@ -835,7 +1507,11 @@ public class LoginOptionsPage extends BasePage {
 
 	public boolean isBiometricScreenActive() {
 		return isBiometricIntegrationContainerVisibleNow()
-				&& (isBiometricVidOptionVisibleNow() || isBiometricVidTextFieldVisibleNow());
+				|| isThunderBiometricIdEntryScreen()
+				|| isBiometricVidOptionVisibleNow()
+				|| isBiometricVidTextFieldVisibleNow()
+				|| isBiometricDeviceDiscovered()
+				|| getVisiblePageText().contains("provide your biometrics");
 	}
 
 	private boolean isBiometricIntegrationContainerVisibleNow() {
@@ -844,38 +1520,189 @@ public class LoginOptionsPage extends BasePage {
 	}
 
 	private boolean isBiometricVidOptionVisibleNow() {
-		List<WebElement> options = driver.findElements(By.id("vid"));
-		return !options.isEmpty() && options.get(0).isDisplayed();
+		for (String elementId : List.of("vid", "login_id_uin", "login_id_vid")) {
+			for (WebElement option : driver.findElements(By.id(elementId))) {
+				if (option.isDisplayed()) {
+					return true;
+				}
+			}
+		}
+		return false;
 	}
 
 	private boolean isBiometricVidTextFieldVisibleNow() {
-		List<WebElement> fields = driver.findElements(By.id("sbi_vid"));
-		return !fields.isEmpty() && fields.get(0).isDisplayed();
+		for (String fieldId : List.of("sbi_vid", "sbi_uin")) {
+			List<WebElement> fields = driver.findElements(By.id(fieldId));
+			if (!fields.isEmpty() && fields.get(0).isDisplayed()) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private WebElement findBiometricSbiInputField() {
+		for (String fieldId : List.of("sbi_vid", "sbi_uin")) {
+			for (WebElement field : driver.findElements(By.id(fieldId))) {
+				if (field.isDisplayed()) {
+					return field;
+				}
+			}
+		}
+		return null;
+	}
+
+	public void ensureBiometricScanPrerequisiteIdEntered() {
+		if (isScanningDevicesMessageVisible() || isDeviceNotFoundMessageVisible()
+				|| isBiometricDeviceDiscovered()) {
+			return;
+		}
+		selectBiometricUinVidLoginIdType();
+		WebElement sbiField = findBiometricSbiInputField();
+		if (sbiField != null) {
+			String existing = sbiField.getAttribute("value");
+			if (existing == null || existing.isBlank()) {
+				String uin = resolvePrerequisiteUinForBiometric();
+				if (uin != null) {
+					enterBiometricVid(uin);
+				}
+			} else {
+				sbiField.sendKeys(org.openqa.selenium.Keys.TAB);
+			}
+			waitForBiometricWidgetAfterIdEntry();
+			return;
+		}
+		WebElement loginIdField = findVisibleLoginIdInput();
+		if (loginIdField != null) {
+			String existing = loginIdField.getAttribute("value");
+			if (existing == null || existing.isBlank()) {
+				String uin = resolvePrerequisiteUinForBiometric();
+				if (uin != null) {
+					enterBiometricVid(uin);
+				}
+			}
+			clickContinueOnBiometricLoginIdScreen();
+			waitForBiometricWidgetAfterIdEntry();
+		}
+	}
+
+	private String resolvePrerequisiteUinForBiometric() {
+		String uin = EsignetUtil.getPrerequisiteUinForBiometricLogin();
+		if (uin == null || uin.isBlank()) {
+			uin = EsignetConfigManager.getproperty("mockUin");
+		}
+		if (uin == null || uin.isBlank()) {
+			uin = EsignetConfigManager.getproperty("uin");
+		}
+		return (uin == null || uin.isBlank()) ? null : uin.trim();
+	}
+
+	public void clickContinueOnBiometricLoginIdScreen() {
+		if (isScanningDevicesMessageVisible() || isDeviceNotFoundMessageVisible()
+				|| isBiometricDeviceDiscovered()) {
+			return;
+		}
+		if (findBiometricSbiInputField() != null) {
+			return;
+		}
+		WebElement continueButton = findBiometricLoginIdContinueButton();
+		if (continueButton == null) {
+			throw new TimeoutException("Continue button not found on biometric login ID screen");
+		}
+		clickOnElement(continueButton, "Clicked Continue on biometric login ID screen");
+		waitForBiometricWidgetAfterIdEntry();
+	}
+
+	private WebElement findBiometricLoginIdContinueButton() {
+		List<By> locators = List.of(
+				By.id("submit_uin"),
+				By.id("continue"),
+				By.id("form-submit-button"),
+				By.xpath("//button[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'continue')]"),
+				By.cssSelector("button[type='submit']"));
+		for (By locator : locators) {
+			try {
+				for (WebElement candidate : driver.findElements(locator)) {
+					if (candidate.isDisplayed() && candidate.isEnabled()) {
+						return candidate;
+					}
+				}
+			} catch (StaleElementReferenceException ignored) {
+
+			}
+		}
+		return null;
+	}
+
+	private void waitForBiometricWidgetAfterIdEntry() {
+		try {
+			new WebDriverWait(driver, Duration.ofSeconds(getBiometricScanningWaitSeconds()))
+					.pollingEvery(Duration.ofMillis(500))
+					.until(webDriver -> isScanningDevicesMessageVisible()
+							|| isDeviceNotFoundMessageVisible()
+							|| isBiometricDeviceDiscovered()
+							|| isBiometricIntegrationContainerVisibleNow());
+		} catch (TimeoutException ignored) {
+
+		}
 	}
 
 	public boolean isBiometricVidOptionDisplayed() {
+		waitForBiometricScreenReady();
+		if (isBiometricVidOptionVisibleNow() || isThunderBiometricIdEntryScreen()) {
+			return true;
+		}
 		return isElementVisible(vidOption, "Verified UIN/VID option is displayed on biometric screen");
 	}
 
 	public void clickOnBiometricVidOptionButton() {
-		clickOnElement(vidOption, "Clicked on UIN/VID option on biometric screen");
+		waitForBiometricScreenReady();
+		if (isScanningDevicesMessageVisible() || isDeviceNotFoundMessageVisible()
+				|| isBiometricDeviceDiscovered()) {
+			return;
+		}
+		if (isBiometricVidTextFieldVisibleNow() || findVisibleLoginIdInput() != null) {
+			selectBiometricUinVidLoginIdType();
+			return;
+		}
+		for (String elementId : List.of("vid", "login_id_vid", "login_id_uin")) {
+			for (WebElement option : driver.findElements(By.id(elementId))) {
+				if (option.isDisplayed()) {
+					clickOnElement(option, "Clicked on UIN/VID option on biometric screen");
+					return;
+				}
+			}
+		}
+		selectBiometricUinVidLoginIdType();
 	}
 
-	/**
-	 * SBI widget re-renders after Mock MDS retry can hide the UIN/VID input until the tab is selected again.
-	 */
 	public void ensureBiometricVidFieldVisible() {
+		if (isScanningDevicesMessageVisible() || isDeviceNotFoundMessageVisible()
+				|| isBiometricDeviceDiscovered()) {
+			return;
+		}
 		if (isBiometricVidTextFieldVisibleNow()) {
+			return;
+		}
+		if (isThunderBiometricIdEntryScreen()) {
+			selectUinOrVidLoginIdTypeForOtp(null);
+			waitForLoginIdInputReady();
 			return;
 		}
 		if (isBiometricVidOptionVisibleNow()) {
 			clickOnBiometricVidOptionButton();
 		}
-		waitForElementVisible(biometricVidField);
+		if (isBiometricVidTextFieldVisibleNow()) {
+			waitForElementVisible(biometricVidField);
+		}
 	}
 
 	public boolean isBiometricVidTextFieldDisplayed() {
-		return isElementVisible(biometricVidField, "Verified VID text field is displayed on biometric screen");
+		WebElement sbiField = findBiometricSbiInputField();
+		if (sbiField != null) {
+			return isElementVisible(sbiField, "Verified SBI UIN/VID text field is displayed on biometric screen");
+		}
+		WebElement field = findVisibleLoginIdInput();
+		return field != null && field.isDisplayed();
 	}
 
 	private static final String SCANNING_DEVICES_MSG_KEY = "loadingMsgs.scanning_devices_msg";
@@ -935,15 +1762,27 @@ public class LoginOptionsPage extends BasePage {
 
 	private boolean isScanningDevicesMessageVisible() {
 		return isLocalizedTextVisibleWithinBiometricContainer(SCANNING_DEVICES_MSG_KEY)
-				|| isTextVisibleWithinBiometricContainer("scanning devices");
+				|| isTextVisibleWithinBiometricContainer("scanning devices")
+				|| getVisiblePageText().contains("scanning devices");
 	}
 
 	public boolean isScanningDevicesMessageDisplayed() {
-		return waitForLocalizedTextWithinBiometricContainer(SCANNING_DEVICES_MSG_KEY, getBiometricScanningWaitSeconds());
+		if (waitForLocalizedTextWithinBiometricContainer(SCANNING_DEVICES_MSG_KEY, getBiometricScanningWaitSeconds())) {
+			return true;
+		}
+		try {
+			new WebDriverWait(driver, Duration.ofSeconds(getBiometricScanningWaitSeconds()))
+					.pollingEvery(Duration.ofMillis(500))
+					.until(webDriver -> getVisiblePageText().contains("scanning devices"));
+			return true;
+		} catch (TimeoutException e) {
+			return false;
+		}
 	}
 
 	public boolean isRetryScanButtonNotDisplayedWhileScanning() {
-		if (!waitForLocalizedTextWithinBiometricContainer(SCANNING_DEVICES_MSG_KEY, 5)) {
+		if (!isScanningDevicesMessageVisible()
+				&& !waitForLocalizedTextWithinBiometricContainer(SCANNING_DEVICES_MSG_KEY, 5)) {
 			return true;
 		}
 		return !isRetryScanButtonVisible();
@@ -956,6 +1795,7 @@ public class LoginOptionsPage extends BasePage {
 			wait.until(driver -> isDeviceNotFoundMessageVisible());
 			return true;
 		} catch (TimeoutException e) {
+			LOGGER.warn("Device-not-found state was not detected. SBI text: {}", getSbiVisibleText());
 			return false;
 		}
 	}
@@ -988,7 +1828,10 @@ public class LoginOptionsPage extends BasePage {
 	}
 
 	public void syncBiometricWidgetIfMockMdsRunning() {
-		if (!MockMdsManager.isRunning() || !isBiometricScreenActive()) {
+		if (!MockMdsManager.isRunning() || !isBiometricScanningOrDiscoveredScreen()) {
+			return;
+		}
+		if (isBiometricDeviceDiscovered()) {
 			return;
 		}
 		long deadline = System.currentTimeMillis() + getBiometricDeviceDiscoveryTimeoutSeconds() * 1000L;
@@ -1006,17 +1849,30 @@ public class LoginOptionsPage extends BasePage {
 				break;
 			}
 		}
-		if (!isBiometricDeviceDiscovered()) {
+		if (!isBiometricDeviceDiscovered() && isDeviceNotFoundMessageVisible()) {
 			reenterBiometricLoginAfterMockMdsStart();
 		}
 	}
 
-	/**
-	 * When Mock MDS starts after the widget already scanned with no device, going back and re-opening
-	 * biometric login forces a fresh SBI discovery pass (more reliable than retry alone).
-	 */
+	private boolean isBiometricScanningOrDiscoveredScreen() {
+		return isBiometricDeviceDiscovered()
+				|| isScanningDevicesMessageVisible()
+				|| isDeviceNotFoundMessageVisible()
+				|| isBiometricIntegrationContainerVisibleNow()
+				|| getVisiblePageText().contains("provide your biometrics");
+	}
+
 	public void reenterBiometricLoginAfterMockMdsStart() {
 		if (!MockMdsManager.isRunning()) {
+			return;
+		}
+		if (isBiometricDeviceDiscovered()) {
+			return;
+		}
+		String pageText = getVisiblePageText();
+		if (pageText.contains("provide your biometrics") && !isDeviceNotFoundMessageVisible()) {
+			triggerBrowserSbiDiscovery();
+			injectMockMdsDeviceCacheIfRunning();
 			return;
 		}
 		try {
@@ -1027,14 +1883,13 @@ public class LoginOptionsPage extends BasePage {
 					break;
 				}
 			}
-			if (isLoginWithBiometricsOptionVisible()) {
-				clickOnElement(loginWithBiometricBtn, "Re-opened Login with Biometrics after Mock MDS start");
-			}
+			WebDriverWait loginOptionsWait = new WebDriverWait(driver, Duration.ofSeconds(15));
+			loginOptionsWait.until(webDriver -> isElementDisplayed(loginWithBiometricBtn));
+			clickOnElement(loginWithBiometricBtn, "Re-opened Login with Biometrics after Mock MDS start");
 			WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(getBiometricScanningWaitSeconds()));
-			wait.until(driver -> isBiometricIntegrationContainerVisibleNow());
-			if (isBiometricVidOptionVisibleNow()) {
-				clickOnBiometricVidOptionButton();
-			}
+			wait.until(driver -> isBiometricFlowLandmarkVisible());
+			selectBiometricUinVidLoginIdType();
+			ensureBiometricScanPrerequisiteIdEntered();
 			lastBiometricRescanAttemptMs = System.currentTimeMillis();
 			rescanActivitySeen = true;
 			triggerBrowserSbiDiscovery();
@@ -1050,8 +1905,8 @@ public class LoginOptionsPage extends BasePage {
 		clearBrowserSbiDeviceCache();
 		triggerBrowserSbiDiscovery();
 		injectMockMdsDeviceCacheIfRunning();
-		if (!triggerBiometricRescanViaWidget() && isBiometricVidOptionVisibleNow()) {
-			clickOnBiometricVidOptionButton();
+		if (!triggerBiometricRescanViaWidget()) {
+			selectBiometricUinVidLoginIdType();
 		}
 	}
 
@@ -1075,7 +1930,7 @@ public class LoginOptionsPage extends BasePage {
 					cacheEntries);
 			rescanActivitySeen = true;
 		} catch (Exception ignored) {
-			// Best-effort cache seed before widget rescan.
+
 		}
 	}
 
@@ -1139,7 +1994,7 @@ public class LoginOptionsPage extends BasePage {
 							+ "});");
 			rescanActivitySeen = true;
 		} catch (Exception ignored) {
-			// Browser async discovery is best-effort; widget retry paths still run.
+
 		}
 	}
 
@@ -1152,26 +2007,32 @@ public class LoginOptionsPage extends BasePage {
 							+ "localStorage.removeItem('deviceInfos');"
 							+ "} catch (e) {}");
 		} catch (Exception ignored) {
-			// Best-effort cache reset before rescan.
+
 		}
 	}
 
 	private boolean triggerBiometricRescanViaWidget() {
 		try {
+			String clearCache = MockMdsManager.isRunning()
+					? ""
+					: "try { localStorage.removeItem('deviceInfo'); localStorage.removeItem('discover');"
+							+ " localStorage.removeItem('deviceInfos'); } catch (e) {}";
 			Object triggered = ((org.openqa.selenium.JavascriptExecutor) driver).executeScript(
 					"const root = document.querySelector('#secure-biometric-interface-integration');"
 							+ "if (!root) { return false; }"
-							+ "try {"
-							+ "localStorage.removeItem('deviceInfo');"
-							+ "localStorage.removeItem('discover');"
-							+ "localStorage.removeItem('deviceInfos');"
-							+ "} catch (e) {}"
+							+ clearCache
 							+ "const candidates = root.querySelectorAll('button, a, [role=\"button\"], span');"
 							+ "for (const element of candidates) {"
 							+ "  const label = (element.textContent || '').trim().toLowerCase();"
-							+ "  if (label.includes('retry') || label.includes('try again')) {"
+							+ "  const aria = (element.getAttribute('aria-label') || element.getAttribute('title') || '').toLowerCase();"
+							+ "  if (label.includes('retry') || label.includes('try again') || label.includes('refresh')"
+							+ "      || aria.includes('retry') || aria.includes('refresh')) {"
 							+ "    element.click(); return true;"
 							+ "  }"
+							+ "}"
+							+ "const dropdown = root.querySelector('.sbd-dropdown_container, [class*=\"dropdown\"]');"
+							+ "if (dropdown && dropdown.nextElementSibling && dropdown.nextElementSibling.tagName === 'BUTTON') {"
+							+ "  dropdown.nextElementSibling.click(); return true;"
 							+ "}"
 							+ "const alert = root.querySelector(\"div[role='alert']\");"
 							+ "if (alert) {"
@@ -1194,6 +2055,7 @@ public class LoginOptionsPage extends BasePage {
 				+ "'abcdefghijklmnopqrstuvwxyz'),'retry') or contains(translate(normalize-space(.),"
 				+ "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'try again')";
 		List<By> locators = List.of(
+				ICON_RETRY_BUTTON_SELECTOR,
 				By.xpath("//div[@id='secure-biometric-interface-integration']//button[" + retryTextXpath + "]"),
 				By.xpath("//div[@id='secure-biometric-interface-integration']//*[@role='button' and ("
 						+ retryTextXpath + ")]"),
@@ -1210,7 +2072,7 @@ public class LoginOptionsPage extends BasePage {
 					}
 				}
 			} catch (StaleElementReferenceException ignored) {
-				// SBI widget re-renders during scan; retry on next poll.
+
 			}
 		}
 		return null;
@@ -1223,15 +2085,29 @@ public class LoginOptionsPage extends BasePage {
 				return false;
 			}
 			String className = element.getAttribute("class");
-			if (className != null && className.contains("sbd-bg-gradient")) {
-				String label = normalizeMessage(safeGetText(element));
-				if (!label.contains("retry") && !label.contains("try again")) {
-					return false;
-				}
-			}
 			String label = normalizeMessage(safeGetText(element));
-			if (label.contains("retry") || label.contains("try again")) {
+			if (className != null && className.contains("sbd-bg-gradient")
+					&& !label.contains("retry") && !label.contains("try again") && !label.contains("refresh")) {
+				return false;
+			}
+			if (label.contains("retry") || label.contains("try again") || label.contains("refresh")) {
 				return true;
+			}
+			String aria = normalizeMessage(element.getAttribute("aria-label"));
+			String title = normalizeMessage(element.getAttribute("title"));
+			if (aria.contains("retry") || aria.contains("refresh") || title.contains("retry")
+					|| title.contains("refresh")) {
+				return true;
+			}
+
+			if ("button".equalsIgnoreCase(tagName) && (label.isBlank() || label.length() <= 2)) {
+				if (isAdjacentToDeviceDropdown(element)) {
+					return true;
+				}
+				if (className != null && className.contains("sbd-cursor-pointer")
+						&& !className.contains("sbd-bg-gradient")) {
+					return true;
+				}
 			}
 			return className != null && className.contains("sbd-block");
 		} catch (StaleElementReferenceException e) {
@@ -1239,17 +2115,49 @@ public class LoginOptionsPage extends BasePage {
 		}
 	}
 
+	private boolean isAdjacentToDeviceDropdown(WebElement element) {
+		try {
+			Object previous = ((JavascriptExecutor) driver)
+					.executeScript("return arguments[0].previousElementSibling;", element);
+			if (!(previous instanceof WebElement previousElement)) {
+				return false;
+			}
+			String previousClass = previousElement.getAttribute("class");
+			String previousId = previousElement.getAttribute("id");
+			return (previousClass != null && previousClass.toLowerCase().contains("dropdown"))
+					|| "sbi-device".equals(previousId);
+		} catch (Exception e) {
+			return false;
+		}
+	}
+
 	public void enterBiometricVid(String vid) {
 		ensureBiometricVidFieldVisible();
-		biometricVidField.clear();
-		enterText(biometricVidField, vid, "Entered UIN/VID in biometric field");
-		syncBiometricWidgetIfMockMdsRunning();
+		WebElement sbiField = findBiometricSbiInputField();
+		if (sbiField != null) {
+			clearField(sbiField);
+			enterText(sbiField, vid, "Entered UIN/VID in biometric field");
+			syncBiometricWidgetIfMockMdsRunning();
+		} else {
+			WebElement field = findVisibleLoginIdInput();
+			setLoginIdFieldValue(field, vid);
+
+		}
 	}
 
 	public void clearBiometricVidField() {
 		ensureBiometricVidFieldVisible();
-		biometricVidField.clear();
-		biometricVidField.sendKeys(org.openqa.selenium.Keys.TAB);
+		WebElement sbiField = findBiometricSbiInputField();
+		if (sbiField != null) {
+			clearField(sbiField);
+			sbiField.sendKeys(org.openqa.selenium.Keys.TAB);
+		} else {
+			WebElement field = findVisibleLoginIdInput();
+			if (field != null) {
+				clearField(field);
+				field.sendKeys(org.openqa.selenium.Keys.TAB);
+			}
+		}
 	}
 
 	public boolean isBiometricScanAndVerifyButtonDisplayed() {
@@ -1266,11 +2174,11 @@ public class LoginOptionsPage extends BasePage {
 						return disabled == null || "false".equalsIgnoreCase(disabled);
 					}
 				} catch (StaleElementReferenceException ignored) {
-					// SBI widget re-renders during scan; retry on next poll.
+
 				}
 			}
 		} catch (StaleElementReferenceException ignored) {
-			// SBI widget re-renders during scan; retry on next poll.
+
 		}
 		return false;
 	}
@@ -1347,7 +2255,7 @@ public class LoginOptionsPage extends BasePage {
 				try {
 					button.click();
 				} catch (Exception ignored) {
-					// Expected when the SBI widget keeps the button disabled.
+
 				}
 				return;
 			}
@@ -1401,26 +2309,98 @@ public class LoginOptionsPage extends BasePage {
 		syncBiometricWidgetIfMockMdsRunning();
 		int waitSeconds = getBiometricAuthenticationTimeoutSeconds();
 		WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(waitSeconds));
+		WebElement scanButton;
 		try {
-			WebElement scanButton = wait.until(ExpectedConditions.elementToBeClickable(getBiometricScanAndVerifyButtonLocator()));
-			clickOnElement(scanButton, "Clicked biometric scan and verify button");
-			return;
+			scanButton = wait.until(driver -> findDisplayedBiometricScanAndVerifyButton());
 		} catch (TimeoutException e) {
 			syncBiometricWidgetIfMockMdsRunning();
+			wait = new WebDriverWait(driver, Duration.ofSeconds(waitSeconds));
+			scanButton = wait.until(driver -> findDisplayedBiometricScanAndVerifyButton());
 		}
-		wait = new WebDriverWait(driver, Duration.ofSeconds(waitSeconds));
-		WebElement scanButton = wait.until(ExpectedConditions.elementToBeClickable(getBiometricScanAndVerifyButtonLocator()));
-		clickOnElement(scanButton, "Clicked biometric scan and verify button");
+		clickBiometricScanAndVerifyElement(scanButton);
 	}
 
-	private By getBiometricScanAndVerifyButtonLocator() {
-		return By.xpath("//div[@id='secure-biometric-interface-integration']//button[contains("
-				+ "translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'scan') "
-				+ "or contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'verify')]");
+	private void clickBiometricScanAndVerifyElement(WebElement scanButton) {
+		try {
+			clickOnElement(scanButton, "Clicked biometric scan and verify button");
+		} catch (Exception e) {
+			((JavascriptExecutor) driver).executeScript("arguments[0].click();", scanButton);
+			ExtentReportManager.getTest().log(Status.INFO, "Clicked biometric scan and verify button via JavaScript");
+		}
+	}
+
+	private List<By> getBiometricScanAndVerifyButtonLocators() {
+		String scanAndVerify = "contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+				+ "'abcdefghijklmnopqrstuvwxyz'),'scan') and contains(translate(normalize-space(.),"
+				+ "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'verify')";
+		return List.of(
+				By.xpath("//div[@id='secure-biometric-interface-integration']//button[" + scanAndVerify + "]"),
+				By.xpath("//button[" + scanAndVerify + "]"),
+				By.xpath("//*[@role='button' and (" + scanAndVerify + ")]"),
+				By.xpath("//div[@id='secure-biometric-interface-integration']//*[" + scanAndVerify + "]"));
 	}
 
 	private List<WebElement> findBiometricScanAndVerifyButtons() {
-		return driver.findElements(getBiometricScanAndVerifyButtonLocator());
+		List<WebElement> matches = new ArrayList<>();
+		for (By locator : getBiometricScanAndVerifyButtonLocators()) {
+			matches.addAll(driver.findElements(locator));
+		}
+		WebElement jsMatch = findScanAndVerifyButtonViaJs();
+		if (jsMatch != null) {
+			matches.add(jsMatch);
+		}
+		return matches;
+	}
+
+	private WebElement findDisplayedBiometricScanAndVerifyButton() {
+		for (WebElement button : findBiometricScanAndVerifyButtons()) {
+			try {
+				if (!button.isDisplayed()) {
+					continue;
+				}
+				String text = normalizeMessage(safeGetText(button));
+				if (text.length() > 80) {
+					continue;
+				}
+				if ((text.contains("scan") && text.contains("verify")) || text.contains("scan & verify")) {
+					return button;
+				}
+			} catch (StaleElementReferenceException ignored) {
+
+			}
+		}
+		return findScanAndVerifyButtonViaJs();
+	}
+
+	private WebElement findScanAndVerifyButtonViaJs() {
+		try {
+			Object result = ((JavascriptExecutor) driver).executeScript(
+					"const labels = ['scan and verify', 'scan & verify'];"
+							+ "const search = (root) => {"
+							+ "  let best = null;"
+							+ "  let bestLen = Number.POSITIVE_INFINITY;"
+							+ "  const elements = root.querySelectorAll('button, [role=\"button\"], a, div, span');"
+							+ "  for (const el of elements) {"
+							+ "    const text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();"
+							+ "    if (!text || text.length > 40) { continue; }"
+							+ "    if (labels.some((label) => text === label || text.includes(label))) {"
+							+ "      if (text.length < bestLen) { best = el; bestLen = text.length; }"
+							+ "    }"
+							+ "    if (el.shadowRoot) {"
+							+ "      const nested = search(el.shadowRoot);"
+							+ "      if (nested) { return nested; }"
+							+ "    }"
+							+ "  }"
+							+ "  return best;"
+							+ "};"
+							+ "return search(document);");
+			if (result instanceof WebElement) {
+				return (WebElement) result;
+			}
+		} catch (Exception ignored) {
+
+		}
+		return null;
 	}
 
 	private boolean isBiometricErrorMessageVisible(String... partialMessages) {
@@ -1444,10 +2424,44 @@ public class LoginOptionsPage extends BasePage {
 
 	private String getVisibleErrorBannerText() {
 		try {
-			List<WebElement> banners = driver.findElements(By.id("error-banner-message"));
-			for (WebElement banner : banners) {
-				if (banner.isDisplayed()) {
-					return normalizeMessage(safeGetText(banner));
+			List<By> locators = List.of(
+					By.id("error-banner-message"),
+					By.id("error-banner"),
+					By.cssSelector("[role='alert']"),
+					By.cssSelector("[aria-live='assertive']"),
+					By.cssSelector("[data-slot='form-message']"),
+					By.cssSelector("[class*='field__error']"),
+					By.cssSelector("[class*='form-error']"),
+					By.cssSelector("[class*='error-message']"),
+					By.cssSelector("[class*='error-banner']"));
+			for (By locator : locators) {
+				for (WebElement banner : driver.findElements(locator)) {
+					if (!banner.isDisplayed()) {
+						continue;
+					}
+					String text = normalizeMessage(safeGetText(banner));
+					if (!text.isBlank()) {
+						return text;
+					}
+				}
+			}
+			for (WebElement field : driver.findElements(By.cssSelector("[aria-invalid='true']"))) {
+				if (!field.isDisplayed()) {
+					continue;
+				}
+				String describedBy = field.getAttribute("aria-describedby");
+				if (describedBy == null || describedBy.isBlank()) {
+					continue;
+				}
+				for (String id : describedBy.split("\\s+")) {
+					for (WebElement msg : driver.findElements(By.id(id))) {
+						if (msg.isDisplayed()) {
+							String text = normalizeMessage(safeGetText(msg));
+							if (!text.isBlank()) {
+								return text;
+							}
+						}
+					}
 				}
 			}
 		} catch (StaleElementReferenceException ignored) {
@@ -1456,13 +2470,75 @@ public class LoginOptionsPage extends BasePage {
 		return "";
 	}
 
+	public boolean waitForBiometricScanCompletedWithoutDevice() {
+		logBiometricOutcome("Waiting for biometric device scan to complete with no device found");
+		boolean completed = waitForDeviceNotFoundMessageDisplayed() && !isBiometricDeviceDiscovered();
+		if (completed) {
+			logBiometricOutcome("Biometric device scan completed: device not found");
+			return true;
+		}
+		logBiometricOutcome("Biometric device scan did not complete with no device found."
+				+ describeBiometricEndState());
+		return false;
+	}
+
+	public boolean waitForBiometricScanCompletedWithDevice() {
+		logBiometricOutcome("Waiting for biometric device scan to complete with a discovered device");
+		if (MockMdsManager.isRunning()) {
+			syncBiometricWidgetIfMockMdsRunning();
+		}
+		boolean discovered = waitForBiometricDeviceDiscovered();
+		boolean scanReady = discovered && waitForBiometricScanAndVerifyButtonDisplayed();
+		if (scanReady) {
+			logBiometricOutcome("Biometric device scan completed: device discovered, Scan and Verify is available");
+			return true;
+		}
+		logBiometricOutcome("Biometric device scan did not complete with a discovered device."
+				+ describeBiometricEndState());
+		return discovered && isBiometricScanAndVerifyButtonDisplayed();
+	}
+
+	public boolean waitForBiometricScanAndVerifyButtonDisplayed() {
+		int waitSeconds = getBiometricDeviceDiscoveryTimeoutSeconds();
+		WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(waitSeconds));
+		try {
+			wait.until(webDriver -> findDisplayedBiometricScanAndVerifyButton() != null);
+			return true;
+		} catch (TimeoutException e) {
+			return isBiometricScanAndVerifyButtonDisplayed();
+		}
+	}
+
+	public String describeBiometricEndState() {
+		StringBuilder details = new StringBuilder();
+		details.append(" URL=").append(driver.getCurrentUrl());
+		details.append(" scanning=").append(isScanningDevicesMessageVisible());
+		details.append(" deviceNotFound=").append(isDeviceNotFoundMessageVisible());
+		details.append(" deviceDiscovered=").append(isBiometricDeviceDiscovered());
+		details.append(" scanAndVerify=").append(isBiometricScanAndVerifyButtonDisplayed());
+		details.append(" attention=").append(isAttentionScreenDisplayedNow());
+		String banner = getVisibleErrorBannerText();
+		if (!banner.isBlank()) {
+			details.append(" error=").append(banner);
+		}
+		return details.toString();
+	}
+
+	private void logBiometricOutcome(String message) {
+		LOGGER.info(message);
+		ExtentReportManager.getTest().log(Status.INFO, message);
+	}
+
 	public boolean waitForBiometricAuthenticationSuccess() {
+		logBiometricOutcome("Waiting for biometric authentication to complete");
 		int waitSeconds = getBiometricAuthenticationTimeoutSeconds();
 		WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(waitSeconds));
 		try {
-			wait.until(driver -> isBiometricAuthenticationSuccess());
+			wait.until(webDriver -> isBiometricAuthenticationSuccess());
+			logBiometricOutcome("Biometric authentication completed." + describeBiometricEndState());
 			return true;
 		} catch (TimeoutException e) {
+			logBiometricOutcome("Biometric authentication did not complete." + describeBiometricEndState());
 			return false;
 		}
 	}
@@ -1470,9 +2546,9 @@ public class LoginOptionsPage extends BasePage {
 	public String getBiometricAuthenticationFailureDetails() {
 		String banner = getVisibleErrorBannerText();
 		if (banner.isBlank()) {
-			return "";
+			return describeBiometricEndState();
 		}
-		return " (UI error: " + banner + ")";
+		return " (UI error: " + banner + ")" + describeBiometricEndState();
 	}
 
 	private int getBiometricScanningWaitSeconds() {
@@ -1510,37 +2586,59 @@ public class LoginOptionsPage extends BasePage {
 	}
 
 	private boolean isDeviceNotFoundMessageVisible() {
-		if (hasBiometricDeviceDropdown() || isBiometricScanAndVerifyButtonEnabled()) {
+		if (hasDiscoveredBiometricDevice() || isBiometricScanAndVerifyButtonEnabled()) {
 			return false;
 		}
 
-		String containerText = getBiometricContainerText();
-		if (containerText.contains("device not found") && containerText.contains("connectivity")) {
+		String combined = getSbiVisibleText();
+		if (isScanningDevicesMessageVisible() && !containsDeviceNotFoundCopy(combined)) {
+			return false;
+		}
+		if (containsDeviceNotFoundCopy(combined)) {
 			return true;
 		}
 
 		try {
 			List<WebElement> alerts = driver.findElements(
-					By.cssSelector("#secure-biometric-interface-integration div[role='alert']"));
+					By.cssSelector("#secure-biometric-interface-integration div[role='alert'], div[role='alert']"));
 			for (WebElement alert : alerts) {
-				if (alert.isDisplayed()) {
-					String alertText = normalizeMessage(safeGetText(alert));
-					if (alertText.contains("device not found") && alertText.contains("connectivity")) {
-						return true;
-					}
+				if (alert.isDisplayed() && containsDeviceNotFoundCopy(normalizeMessage(safeGetText(alert)))) {
+					return true;
 				}
 			}
 		} catch (StaleElementReferenceException ignored) {
-			// DOM is still updating while SBI scans for devices; retry on next wait poll.
+
 		}
 
 		String expectedMessage = ResourceBundleLoader.get("errors.no_devices_found_msg");
-		if (expectedMessage.startsWith("!!MISSING_KEY:")) {
-			LOGGER.warn("errors.no_devices_found_msg is missing from the resource bundle - "
-					+ "device-not-found detection relied only on the English literal check above.");
+		if (!expectedMessage.startsWith("!!MISSING_KEY:")
+				&& combined.contains(normalizeMessage(expectedMessage))) {
+			return true;
+		}
+		return false;
+	}
+
+	private boolean containsDeviceNotFoundCopy(String text) {
+		if (text == null || text.isBlank()) {
 			return false;
 		}
-		return containerText.contains(normalizeMessage(expectedMessage));
+		return text.contains("device not found")
+				|| text.contains("no devices found")
+				|| text.contains("no device found")
+				|| text.contains("no options")
+				|| (text.contains("connectivity") && (text.contains("retry") || text.contains("try again")));
+	}
+
+	private String getSbiVisibleText() {
+		return (getBiometricContainerText() + " " + getVisiblePageText()).trim();
+	}
+
+	private String getVisiblePageText() {
+		try {
+			return normalizeMessage(safeGetText(driver.findElement(By.tagName("body"))));
+		} catch (Exception e) {
+			return "";
+		}
 	}
 
 	private boolean isTextVisibleWithinBiometricContainer(String normalizedPartialText) {
@@ -1552,10 +2650,15 @@ public class LoginOptionsPage extends BasePage {
 
 	private String getBiometricContainerText() {
 		try {
-			if (!biometricIntegrationContainer.isDisplayed()) {
+			List<WebElement> containers = driver.findElements(By.id("secure-biometric-interface-integration"));
+			if (containers.isEmpty()) {
 				return "";
 			}
-			return normalizeMessage(safeGetText(biometricIntegrationContainer));
+			WebElement container = containers.get(0);
+			if (!container.isDisplayed()) {
+				return "";
+			}
+			return normalizeMessage(safeGetText(container));
 		} catch (StaleElementReferenceException e) {
 			return "";
 		}
@@ -1582,13 +2685,17 @@ public class LoginOptionsPage extends BasePage {
 	}
 
 	private boolean isBiometricDeviceDiscovered() {
-		if (isLocalizedTextVisibleWithinBiometricContainer(SCANNING_DEVICES_MSG_KEY)) {
+		if (containsDeviceNotFoundCopy(getSbiVisibleText())) {
 			return false;
 		}
-		if (hasBiometricDeviceDropdown()) {
+		if (findDisplayedBiometricScanAndVerifyButton() != null) {
 			return true;
 		}
-		return isBiometricScanAndVerifyButtonDisplayed();
+		return hasDiscoveredBiometricDevice();
+	}
+
+	public boolean isBiometricDeviceDiscoveredPublic() {
+		return isBiometricDeviceDiscovered();
 	}
 
 	private boolean isBrowserSbiDeviceCachePopulated() {
@@ -1604,14 +2711,65 @@ public class LoginOptionsPage extends BasePage {
 		}
 	}
 
-	private boolean hasBiometricDeviceDropdown() {
-		List<WebElement> deviceDropdowns = driver.findElements(By.cssSelector(
-				"#secure-biometric-interface-integration .sbd-dropdown_container, "
-						+ "#secure-biometric-interface-integration select"));
-		return deviceDropdowns.stream().anyMatch(WebElement::isDisplayed);
+	private boolean hasDiscoveredBiometricDevice() {
+		String combined = getSbiVisibleText();
+		if (containsDeviceNotFoundCopy(combined)) {
+			return false;
+		}
+		if (combined.contains("mosip-single") || combined.contains("mosip-face")
+				|| combined.contains("mosip-iris") || combined.contains("mosip-finger")
+				|| combined.contains("mosip-double")) {
+			return true;
+		}
+		List<By> optionLocators = List.of(
+				By.cssSelector("#secure-biometric-interface-integration .sbd-dropdown_container option, "
+						+ "#secure-biometric-interface-integration .sbd-dropdown_container li, "
+						+ "#secure-biometric-interface-integration [class*='option']"),
+				By.xpath("//div[@id='secure-biometric-interface-integration']//*[contains(translate(normalize-space(.),"
+						+ "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'mosip-')]"));
+		for (By locator : optionLocators) {
+			for (WebElement element : driver.findElements(locator)) {
+				try {
+					if (!element.isDisplayed()) {
+						continue;
+					}
+					if (isRealDiscoveredDeviceLabel(normalizeMessage(safeGetText(element)))) {
+						return true;
+					}
+				} catch (StaleElementReferenceException ignored) {
+
+				}
+			}
+		}
+		return false;
+	}
+
+	private boolean isRealDiscoveredDeviceLabel(String text) {
+		if (text == null || text.isBlank()) {
+			return false;
+		}
+		if (text.contains("select a device") || text.contains("no options") || text.contains("no device")
+				|| text.contains("scanning")) {
+			return false;
+		}
+		return text.contains("mosip") || text.contains("finger") || text.contains("face") || text.contains("iris")
+				|| text.contains("slap") || text.contains("l1");
+	}
+
+	public boolean isBiometricLoginCompleted() {
+		boolean completed = isBiometricAuthenticationSuccess();
+		if (completed) {
+			logBiometricOutcome("Biometric login completed." + describeBiometricEndState());
+		} else {
+			logBiometricOutcome("Biometric login is not complete." + describeBiometricEndState());
+		}
+		return completed;
 	}
 
 	private boolean isBiometricAuthenticationSuccess() {
+		if (isAttentionScreenDisplayedNow()) {
+			return true;
+		}
 		String currentUrl = driver.getCurrentUrl();
 		if (currentUrl != null) {
 			if (currentUrl.contains("claim-details") || currentUrl.contains("/consent")
@@ -1619,7 +2777,7 @@ public class LoginOptionsPage extends BasePage {
 				return true;
 			}
 		}
-		return driver.findElements(By.id("continue")).stream().anyMatch(WebElement::isDisplayed);
+		return false;
 	}
 
 	private String normalizeMessage(String message) {

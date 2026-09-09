@@ -44,10 +44,6 @@ import io.mosip.testrig.apirig.utils.RestClient;
 import io.mosip.testrig.apirig.utils.CertsUtil;
 import io.mosip.testrig.apirig.utils.KernelAuthentication;
 
-/**
- * Classpath override for mock-mds JwtUtility so Auth capture can fetch the IDA FIR
- * certificate using the apitest RestClient (already authenticated for qa11new).
- */
 public class JwtUtility {
 	private static final Logger LOGGER = Logger.getLogger(JwtUtility.class.getName());
 	private static final String JSON_MEDIA_TYPE = "application/json";
@@ -182,7 +178,23 @@ public class JwtUtility {
 			return cachedIdaCertificate;
 		}
 
-		return fetchIdaCertificateViaClientIdSecretKey();
+		try {
+			String fromClientSecret = fetchIdaCertificateViaClientIdSecretKey();
+			if (fromClientSecret != null && !fromClientSecret.isBlank()) {
+				cachedIdaCertificate = fromClientSecret;
+				return cachedIdaCertificate;
+			}
+		} catch (Exception e) {
+			LOGGER.warning("IDA clientId/secretKey certificate fetch failed: " + e.getMessage());
+		}
+
+		String localFallback = loadLocalFallbackCertificate();
+		if (localFallback != null && !localFallback.isBlank()) {
+			cachedIdaCertificate = localFallback;
+			return cachedIdaCertificate;
+		}
+
+		throw new IllegalStateException("IDA Biometric encryption Certificate not found");
 	}
 
 	private String fetchIdaCertificateViaApitestRestClient() {
@@ -194,6 +206,10 @@ public class JwtUtility {
 			}
 		} catch (Exception e) {
 			LOGGER.warning("CertsUtil IDA certificate fetch failed: " + e.getMessage());
+		}
+
+		if (shouldSkipRemoteIdaCertificateFetch()) {
+			return null;
 		}
 
 		for (String idaBaseUrl : resolveIdaCertificateBaseUrls()) {
@@ -220,6 +236,16 @@ public class JwtUtility {
 			candidates.add(normalizeIdaBaseUrl(BaseTestCase.ApplnURI));
 		}
 		return new java.util.ArrayList<>(candidates);
+	}
+
+	private static boolean shouldSkipRemoteIdaCertificateFetch() {
+		try {
+			String plugin = utils.EsignetConfigManager.getproperty("pluginToExecute");
+			String actuatorEnabled = utils.EsignetConfigManager.getproperty("esignetActuatorEnabled");
+			return "mock".equalsIgnoreCase(plugin) && "false".equalsIgnoreCase(actuatorEnabled);
+		} catch (Exception e) {
+			return false;
+		}
 	}
 
 	private static String normalizeIdaBaseUrl(String baseUrl) {
@@ -288,6 +314,12 @@ public class JwtUtility {
 	}
 
 	private String fetchIdaCertificateViaClientIdSecretKey() throws Exception {
+		String authServerUrl = getPropertyValue("mosip.auth.server.url");
+		String idaServerUrl = getPropertyValue("mosip.ida.server.url");
+		if (authServerUrl == null || authServerUrl.isBlank() || idaServerUrl == null || idaServerUrl.isBlank()) {
+			return null;
+		}
+
 		OkHttpClient client = new OkHttpClient();
 		String requestBody = String.format(AUTH_REQ_TEMPLATE, getPropertyValue("mosip.auth.appid"),
 				getPropertyValue("mosip.auth.clientid"), getPropertyValue("mosip.auth.secretkey"),
@@ -295,7 +327,7 @@ public class JwtUtility {
 
 		MediaType mediaType = MediaType.parse("application/json; charset=utf-8");
 		RequestBody body = RequestBody.create(mediaType, requestBody);
-		Request request = new Request.Builder().url(getPropertyValue("mosip.auth.server.url")).post(body).build();
+		Request request = new Request.Builder().url(authServerUrl).post(body).build();
 		try {
 			Response response = client.newCall(request).execute();
 			if (response.isSuccessful()) {
@@ -304,7 +336,7 @@ public class JwtUtility {
 					authToken = response.header("Authorization");
 				}
 				Request idarequest = new Request.Builder().header("cookie", "Authorization=" + authToken)
-						.url(getPropertyValue("mosip.ida.server.url")).get().build();
+						.url(idaServerUrl).get().build();
 
 				Response idaResponse = new OkHttpClient().newCall(idarequest).execute();
 				if (idaResponse.isSuccessful()) {
@@ -318,6 +350,90 @@ public class JwtUtility {
 			throw e;
 		}
 		return null;
+	}
+
+	private String loadLocalFallbackCertificate() {
+		String configured = null;
+		try {
+			configured = utils.EsignetConfigManager.getproperty("idaFirCertificate");
+		} catch (Exception ignored) {
+			configured = null;
+		}
+		if (configured != null && !configured.isBlank()) {
+			String fromConfig = readCertificateValue(configured.trim());
+			if (fromConfig != null && !fromConfig.isBlank()) {
+				LOGGER.info("Loaded IDA FIR certificate from idaFirCertificate config");
+				return fromConfig;
+			}
+		}
+
+		for (String candidate : new String[] {
+				"Biometric Devices/Finger/Slap/Keys/mosip-ida.cer",
+				"resource/Biometric Devices/Finger/Slap/Keys/mosip-ida.cer",
+				"../Biometric Devices/Finger/Slap/Keys/mosip-ida.cer",
+				"files/keys/MosipTestCert.pem" }) {
+			File file = new File(System.getProperty(USER_DIR), candidate);
+			if (!file.isFile()) {
+				continue;
+			}
+			try (FileInputStream in = new FileInputStream(file)) {
+				String cert = getFileContent(in, StandardCharsets.UTF_8);
+				if (cert != null && !cert.isBlank()) {
+					LOGGER.info("Loaded IDA FIR certificate from " + file.getAbsolutePath());
+					return cert;
+				}
+			} catch (IOException e) {
+				LOGGER.warning("Could not read local IDA certificate " + file + ": " + e.getMessage());
+			}
+		}
+
+		return generateSelfSignedIdaCertificate();
+	}
+
+	private static String readCertificateValue(String value) {
+		if (value.contains("BEGIN CERTIFICATE") || !value.contains("/") && !value.contains("\\")) {
+			return value;
+		}
+		File file = new File(value);
+		if (!file.isFile()) {
+			file = new File(System.getProperty(USER_DIR), value);
+		}
+		if (!file.isFile()) {
+			return null;
+		}
+		try (FileInputStream in = new FileInputStream(file)) {
+			return getFileContent(in, StandardCharsets.UTF_8);
+		} catch (IOException e) {
+			LOGGER.warning("Could not read idaFirCertificate file " + file + ": " + e.getMessage());
+			return null;
+		}
+	}
+
+	private String generateSelfSignedIdaCertificate() {
+		try {
+			java.security.KeyPairGenerator keyPairGenerator = java.security.KeyPairGenerator.getInstance("RSA");
+			keyPairGenerator.initialize(2048);
+			java.security.KeyPair keyPair = keyPairGenerator.generateKeyPair();
+			long now = System.currentTimeMillis();
+			org.bouncycastle.asn1.x500.X500Name dn = new org.bouncycastle.asn1.x500.X500Name("CN=IDA-FIR");
+			org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder builder =
+					new org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder(dn,
+							java.math.BigInteger.valueOf(now),
+							new java.util.Date(now - 86_400_000L),
+							new java.util.Date(now + 3_650L * 86_400_000L), dn, keyPair.getPublic());
+			org.bouncycastle.operator.ContentSigner signer = new org.bouncycastle.operator.jcajce.JcaContentSignerBuilder(
+					"SHA256withRSA").build(keyPair.getPrivate());
+			X509Certificate certificate = new org.bouncycastle.cert.jcajce.JcaX509CertificateConverter()
+					.getCertificate(builder.build(signer));
+			String pem = "-----BEGIN CERTIFICATE-----\n"
+					+ Base64.getMimeEncoder(64, new byte[] { '\n' }).encodeToString(certificate.getEncoded())
+					+ "\n-----END CERTIFICATE-----";
+			LOGGER.info("Generated local self-signed IDA-FIR certificate for Mock MDS Auth capture");
+			return pem;
+		} catch (Exception e) {
+			LOGGER.warning("Could not generate local IDA-FIR certificate: " + e.getMessage());
+			return null;
+		}
 	}
 
 	private static String trimBeginEnd(String pKey) {

@@ -5,6 +5,7 @@ Feature: Browser Compatibility check Screen
   @smoke @BrowserCompatibility
   Scenario: TC_Browser_Compatibility_check_01 - Verify the text labels, elements in browser compatibility screen
    Given user captures the authorize url
+   Then verify login title and subtitle are displayed
    When click on Language selection option
    And select the mandatory language
    And user click on Login with Otp
@@ -29,6 +30,7 @@ Feature: Browser Compatibility check Screen
   @smoke @BrowserCompatibility
   Scenario: Verify the Okay button is clickable on the browser compatibility screen
    Given user captures the authorize url
+   Then verify login title and subtitle are displayed
    When click on Language selection option
    And select the mandatory language
    And user click on Login with Otp

@@ -4,6 +4,7 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -95,7 +96,7 @@ public class BaseTestUtil {
 
 			if (browser.equalsIgnoreCase("chrome")) {
 				ChromeOptions chromeOptions = new ChromeOptions();
-				chromeOptions.addArguments("--use-fake-ui-for-media-stream"); // auto allow camera
+				chromeOptions.addArguments("--use-fake-ui-for-media-stream");
 				chromeOptions.addArguments("--use-fake-device-for-media-stream");
 				applyBrowserLocale(chromeOptions, null, null);
 
@@ -132,15 +133,13 @@ public class BaseTestUtil {
 		List<DesiredCapabilities> allCaps = getAllCapabilities();
 		DesiredCapabilities caps = allCaps.stream()
 				.filter(c -> c.getCapability("browserName").toString().equalsIgnoreCase(browserName)).findFirst()
-				.orElse(allCaps.get(0)); // fallback
+				.orElse(allCaps.get(0));
 
 		LOGGER.info("Running on BrowserStack with browser: " + browserName);
 		LOGGER.info("Running with capabilities: " + caps.toString());
 		return new RemoteWebDriver(remoteUrl, caps);
 	}
 
-	// CSS viewport width/height, device scale factor, and a matching user agent for known device
-	// names, keyed lower-case. Add entries here as new `mobileDevice` config values are needed.
 	private static final Map<String, Object[]> MOBILE_DEVICE_PROFILES = new HashMap<>();
 	static {
 		MOBILE_DEVICE_PROFILES.put("pixel 5", new Object[] { 393, 851, 2.75,
@@ -169,27 +168,35 @@ public class BaseTestUtil {
 
 	public static WebDriver getLocalWebDriverInstance(String browser, boolean isMobile, String deviceName)
 			throws IOException {
+		return getLocalWebDriverInstance(browser, isMobile, deviceName, false);
+	}
+
+	public static WebDriver getLocalWebDriverInstance(String browser, boolean isMobile, String deviceName,
+			boolean ignoreUnhandledPrompts) throws IOException {
 		browser = browser.toLowerCase();
 		boolean isHeadless = Boolean.parseBoolean(EsignetConfigManager.getproperty("headless"));
 		WebDriver driver;
 
 		switch (browser) {
 		case "chrome":
-			if (System.getProperty("os.name").equalsIgnoreCase("Linux")
-					&& "yes".equalsIgnoreCase(EsignetConfigManager.getDocker())) {
-				String chromedriverPath = EsignetConfigManager.getProperty("chromeDriverPath", "/usr/bin/chromedriver");
-
-				File driverFile = new File(chromedriverPath);
-
-				if (!driverFile.exists() || !driverFile.canExecute()) {
-					throw new RuntimeException("Invalid ChromeDriver path configured: " + chromedriverPath
-							+ ". Ensure ChromeDriver exists and is executable.");
-				}
-
-				System.setProperty("webdriver.chrome.driver", chromedriverPath);
-
+			// Testriq images are Alpine (musl). WebDriverManager downloads the glibc
+			// chrome-for-testing binary, which fails with:
+			//   SessionNotCreatedException ... caused by Exec failed, error: 2
+			// Use the image's /usr/bin/chromedriver whenever it exists on Linux.
+			String systemChromeDriver = firstExistingPath(
+					EsignetConfigManager.getProperty("chromeDriverPath", ""),
+					System.getenv("CHROMEDRIVER_PATH"), "/usr/bin/chromedriver",
+					"/usr/lib/chromium/chromedriver", "/usr/lib/chromium-browser/chromedriver");
+			boolean linuxHost = System.getProperty("os.name", "").toLowerCase().contains("linux");
+			boolean dockerRuntime = EsignetConfigManager.isDockerRuntime();
+			// Prefer image chromedriver only in Docker (Alpine/musl). Local Linux uses WDM.
+			if (linuxHost && dockerRuntime && systemChromeDriver != null) {
+				System.setProperty("webdriver.chrome.driver", systemChromeDriver);
+				LOGGER.info("Using system ChromeDriver: " + systemChromeDriver);
 			} else {
 				WebDriverManager.chromedriver().setup();
+				LOGGER.info("Using WebDriverManager ChromeDriver: "
+						+ System.getProperty("webdriver.chrome.driver"));
 			}
 
 			ChromeOptions chromeOptions = new ChromeOptions();
@@ -197,10 +204,23 @@ public class BaseTestUtil {
 			logPrefs.enable(LogType.PERFORMANCE, Level.ALL);
 			chromeOptions.setCapability("goog:loggingPrefs", logPrefs);
 
-			chromeOptions.addArguments("--use-fake-ui-for-media-stream"); // auto-allow camera
+			String chromeBinary = firstExistingPath(EsignetConfigManager.getProperty("chromeBinaryPath", ""),
+					System.getenv("CHROME_BIN"), "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable",
+					"/opt/google/chrome/chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser",
+					"/usr/lib/chromium/chrome");
+			if (chromeBinary != null) {
+				chromeOptions.setBinary(chromeBinary);
+				LOGGER.info("Using Chrome binary: " + chromeBinary);
+			}
+
+			chromeOptions.addArguments("--use-fake-ui-for-media-stream");
 			chromeOptions.addArguments("--use-fake-device-for-media-stream");
 			chromeOptions.addArguments("--enable-media-stream");
 			applyBrowserLocale(chromeOptions, null, null);
+
+			if (ignoreUnhandledPrompts) {
+				chromeOptions.setUnhandledPromptBehaviour(org.openqa.selenium.UnexpectedAlertBehaviour.IGNORE);
+			}
 
 			Map<String, Object> prefs = new HashMap<>();
 			Map<String, Object> profile = new HashMap<>();
@@ -208,33 +228,42 @@ public class BaseTestUtil {
 			contentSettings.put("media_stream_camera", 1);
 			profile.put("managed_default_content_settings", contentSettings);
 			prefs.put("profile", profile);
+			applyLocalSbiAccessFlags(chromeOptions, prefs);
 			chromeOptions.setExperimentalOption("prefs", prefs);
 
-			// Enable mobile emulation if requested. Uses explicit deviceMetrics/userAgent rather than
-			// ChromeDriver's built-in deviceName presets - that list is Chrome-version-dependent and
-			// has dropped/renamed entries across releases (e.g. "Pixel 5" is gone as of Chrome 151),
-			// causing "must be a valid device" errors. Explicit metrics work on any Chrome version.
 			if (isMobile) {
 				chromeOptions.setExperimentalOption("mobileEmulation", buildMobileEmulationSettings(deviceName));
 			}
 
-			// Always set headless flags if needed
-			if (isHeadless) {
-				LOGGER.info("Running in headless mode");
-				chromeOptions.addArguments("--headless=new");
-				chromeOptions.addArguments("--disable-gpu");
-				chromeOptions.addArguments("--window-size=1920x1080");
-			}
-
-			// Always add these for Docker safety
+			// Required in Docker/K8s (non-root UID 1001, no user namespace for Chrome sandbox).
+			// Do not remove for container runs; local non-Docker can still use these safely.
 			chromeOptions.addArguments("--no-sandbox");
 			chromeOptions.addArguments("--disable-dev-shm-usage");
-
-			// Optional: allow Chrome to open a debugging port (harmless)
-			chromeOptions.addArguments("--remote-debugging-port=0");
+			chromeOptions.addArguments("--disable-gpu");
+			chromeOptions.addArguments("--disable-setuid-sandbox");
+			chromeOptions.addArguments("--remote-allow-origins=*");
+			if (isHeadless) {
+				LOGGER.info("Running in headless mode");
+				boolean chromium = chromeBinary != null && chromeBinary.toLowerCase().contains("chromium");
+				chromeOptions.addArguments(chromium ? "--headless" : "--headless=new");
+				chromeOptions.addArguments("--window-size=1920,1080");
+			}
 
 			LOGGER.info("Chrome args: " + chromeOptions);
-			driver = new ChromeDriver(chromeOptions);
+			try {
+				driver = new ChromeDriver(chromeOptions);
+			} catch (Exception e) {
+				String currentDriver = System.getProperty("webdriver.chrome.driver");
+				if (dockerRuntime && systemChromeDriver != null
+						&& !systemChromeDriver.equals(currentDriver)) {
+					LOGGER.warning("ChromeDriver session failed with " + currentDriver + " (" + e.getMessage()
+							+ "); retrying with system ChromeDriver " + systemChromeDriver);
+					System.setProperty("webdriver.chrome.driver", systemChromeDriver);
+					driver = new ChromeDriver(chromeOptions);
+				} else {
+					throw e;
+				}
+			}
 			break;
 
 		case "firefox":
@@ -257,6 +286,7 @@ public class BaseTestUtil {
 			edgeOptions.addArguments("--use-fake-device-for-media-stream");
 			edgeOptions.addArguments("--enable-media-stream");
 			applyBrowserLocale(null, null, edgeOptions);
+			applyLocalSbiAccessFlags(edgeOptions);
 
 			if (isHeadless)
 				edgeOptions.addArguments("--headless=new");
@@ -308,11 +338,31 @@ public class BaseTestUtil {
 		return threadLocalLanguage.get();
 	}
 
+	private static void applyLocalSbiAccessFlags(ChromeOptions chromeOptions, Map<String, Object> prefs) {
+		if (!MockMdsManager.isEnabled()) {
+			return;
+		}
+		chromeOptions.addArguments("--allow-insecure-localhost");
+		chromeOptions.addArguments("--unsafely-treat-insecure-origin-as-secure=http://127.0.0.1,http://localhost");
+		chromeOptions.addArguments("--disable-features=LocalNetworkAccessChecks,BlockInsecurePrivateNetworkRequests,"
+				+ "PrivateNetworkAccessSendPreflights,PrivateNetworkAccessRespectPreflightResults");
+		prefs.put("profile.default_content_setting_values.local_network_access", 1);
+		prefs.put("profile.default_content_setting_values.mixed_script", 1);
+	}
+
+	private static void applyLocalSbiAccessFlags(EdgeOptions edgeOptions) {
+		if (!MockMdsManager.isEnabled()) {
+			return;
+		}
+		edgeOptions.addArguments("--allow-insecure-localhost");
+		edgeOptions.addArguments("--unsafely-treat-insecure-origin-as-secure=http://127.0.0.1,http://localhost");
+		edgeOptions.addArguments("--disable-features=LocalNetworkAccessChecks,BlockInsecurePrivateNetworkRequests,"
+				+ "PrivateNetworkAccessSendPreflights,PrivateNetworkAccessRespectPreflightResults");
+	}
+
 	private static void applyBrowserLocale(ChromeOptions chromeOptions, FirefoxOptions firefoxOptions,
 			EdgeOptions edgeOptions) {
-		// Neutral locale is applied via Page.addScriptToEvaluateOnNewDocument in
-		// applyLocaleOverrideViaCdp — do not pass --lang=xx here because Chrome persists it
-		// into i18nextLng and breaks DEFAULT_LANG fallback assertions (MOSIP-24002 TC_14).
+
 		if (firefoxOptions != null) {
 			String locale = LanguageUtil.getNeutralBrowserLocale();
 			if (locale != null && !locale.isBlank()) {
@@ -322,11 +372,6 @@ public class BaseTestUtil {
 		}
 	}
 
-	/**
-	 * Spoofs {@code navigator.language} on every new document without changing Accept-Language or
-	 * i18next cookies (MOSIP-24002 TC_14). {@code Emulation.setLocaleOverride} alone stores {@code xx}
-	 * in {@code i18nextLng}; script injection only affects the navigator probe the IDP reads first.
-	 */
 	public static void applyLocaleOverrideViaCdp(WebDriver driver) {
 		String locale = LanguageUtil.getNeutralBrowserLocale();
 		if (locale == null || locale.isBlank() || driver == null) {
@@ -353,11 +398,6 @@ public class BaseTestUtil {
 		}
 	}
 
-	/**
-	 * Flips the camera permission for the current origin mid-session via CDP,
-	 * without a driver restart. Used for scenarios where the user grants access
-	 * from browser settings after an earlier denial (e.g. TC_Pre_Video_Preview_07).
-	 */
 	public static void setCameraPermissionAtRuntime(WebDriver driver, String setting) {
 		if (!(driver instanceof ChromeDriver)) {
 			LOGGER.warning("CDP permission override skipped: not a ChromeDriver session");
@@ -371,17 +411,12 @@ public class BaseTestUtil {
 
 		Map<String, Object> params = new HashMap<>();
 		params.put("permission", permission);
-		params.put("setting", setting); // "granted" | "denied" | "prompt"
+		params.put("setting", setting);
 		params.put("origin", origin);
 
 		((ChromeDriver) driver).executeCdpCommand("Browser.setPermission", params);
 	}
 
-	/**
-	 * Simulates disconnecting the network via CDP right at the point the test
-	 * needs it (e.g. immediately after clicking Proceed), rather than relying on
-	 * actually toggling the host machine's Wi-Fi/adapter mid-scenario.
-	 */
 	public static void setNetworkOffline(WebDriver driver, boolean offline) {
 		if (!(driver instanceof ChromeDriver)) {
 			LOGGER.warning("CDP network override skipped: not a ChromeDriver session");
@@ -396,13 +431,6 @@ public class BaseTestUtil {
 		((ChromeDriver) driver).executeCdpCommand("Network.emulateNetworkConditions", params);
 	}
 
-	/**
-	 * Attaches a CDP listener that records a timestamp (epoch millis) every time
-	 * a request matching urlSubstring is sent, for as long as the returned list
-	 * is being appended to. Used to verify polling contracts (e.g. slot
-	 * availability checked every 6s, max 10 times) that aren't observable from
-	 * the DOM alone.
-	 */
 	public static List<Long> captureRequestTimestamps(WebDriver driver, String urlSubstring) {
 		List<Long> timestamps = Collections.synchronizedList(new ArrayList<>());
 		if (!(driver instanceof HasDevTools)) {
@@ -419,6 +447,57 @@ public class BaseTestUtil {
 			}
 		});
 		return timestamps;
+	}
+
+	private static String firstExistingPath(String... candidates) {
+		if (candidates == null) {
+			return null;
+		}
+		for (String candidate : candidates) {
+			if (candidate == null || candidate.isBlank()) {
+				continue;
+			}
+			File file = new File(candidate);
+			if (isUsableExecutable(file)) {
+				return file.getAbsolutePath();
+			}
+		}
+		return null;
+	}
+
+	private static boolean isUsableExecutable(File file) {
+		if (file == null || !file.exists() || !file.canExecute()) {
+			return false;
+		}
+		try {
+			if (file.getCanonicalPath().contains("/snap/")) {
+				LOGGER.warning("Skipping snap-wrapped browser binary: " + file);
+				return false;
+			}
+		} catch (IOException e) {
+			LOGGER.warning("Rejecting browser binary; canonical path inspection failed for " + file + ": "
+					+ e.getMessage());
+			return false;
+		}
+		if (file.isFile() && looksLikeSnapStub(file)) {
+			LOGGER.warning("Skipping snap stub browser binary: " + file);
+			return false;
+		}
+		return file.isFile() || (file.exists() && !file.isDirectory());
+	}
+
+	private static boolean looksLikeSnapStub(File file) {
+		try {
+			if (file.length() > 4096) {
+				return false;
+			}
+			String text = Files.readString(file.toPath());
+			return text.contains("/snap/") || text.contains("snap run");
+		} catch (Exception e) {
+			LOGGER.warning("Rejecting browser binary; snap-stub inspection failed for " + file + ": "
+					+ e.getMessage());
+			return true;
+		}
 	}
 
 }

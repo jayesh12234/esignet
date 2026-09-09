@@ -51,19 +51,11 @@ public class SimplePostForAutoGenId extends EsignetUtil implements ITest {
 			logger.setLevel(Level.ERROR);
 	}
 
-	/**
-	 * get current testcaseName
-	 */
 	@Override
 	public String getTestName() {
 		return testCaseName;
 	}
 
-	/**
-	 * Data provider class provides test case list
-	 * 
-	 * @return object of data provider
-	 */
 	@DataProvider(name = "testcaselist")
 	public Object[] getTestCaseList(ITestContext context) {
 		String ymlFile = context.getCurrentXmlTest().getLocalParameters().get("ymlFile");
@@ -73,16 +65,6 @@ public class SimplePostForAutoGenId extends EsignetUtil implements ITest {
 		return getYmlTestData(ymlFile);
 	}
 
-	/**
-	 * Test method for OTP Generation execution
-	 * 
-	 * @param objTestParameters
-	 * @param testScenario
-	 * @param testcaseName
-	 * @throws AuthenticationTestException
-	 * @throws AdminTestException
-	 * @throws NoSuchAlgorithmException
-	 */
 	@Test(dataProvider = "testcaselist")
 	public void test(TestCaseDTO testCaseDTO)
 			throws AuthenticationTestException, AdminTestException, NoSuchAlgorithmException, SecurityXSSException {
@@ -98,8 +80,6 @@ public class SimplePostForAutoGenId extends EsignetUtil implements ITest {
 			writeConfigValueAndSkipIfProvided("vid", testCaseName, idKeyName);
 		}
 
-		// V3 /client runs per environment: the Sunbird variant (stripped payload, no additionalConfig)
-		// only on Sunbird RC, the mock/purpose-type clients only on non-Sunbird mock.
 		if ("clientId".equals(idKeyName) && testCaseDTO.getEndPoint().contains("/v1/esignet/client-mgmt/client")) {
 			boolean isSunbirdClientVariant = testCaseDTO.getInputTemplate().contains("SunBird");
 			boolean sunbirdActive = EsignetUtil.isSunbirdAuthenticatorActive();
@@ -107,13 +87,15 @@ public class SimplePostForAutoGenId extends EsignetUtil implements ITest {
 			if (isSunbirdClientVariant && !sunbirdActive) {
 				throw new SkipException("Skipped: " + testCaseName + " is only needed on a Sunbird RC-backed server");
 			}
-			if (!isSunbirdClientVariant && (sunbirdActive || !"mock".equalsIgnoreCase(getPluginName()))) {
-				throw new SkipException("Skipped: " + testCaseName + " is only needed for the non-Sunbird mock plugin");
+			if (!isSunbirdClientVariant && sunbirdActive) {
+				throw new SkipException("Skipped: " + testCaseName
+						+ " V3 client-mgmt is not used on a Sunbird RC-backed server");
 			}
 		}
 
-		// Only the default client can be supplied via config; purpose-type/PAR clients are always created.
-		if ("clientId".equals(idKeyName) && testCaseName.contains("CreateOIDCClient_all_Valid_Smoke_sid")) {
+		if ("clientId".equals(idKeyName) && testCaseName.contains("CreateOIDCClient_")
+				&& !testCaseName.contains("CreateOIDCClient_par_required_")
+				&& !testCaseName.contains("CreateOIDCClient_secondary_")) {
 			writeConfigValueAndSkipIfProvided("oidcClientId", testCaseName, idKeyName);
 		}
 
@@ -130,7 +112,6 @@ public class SimplePostForAutoGenId extends EsignetUtil implements ITest {
 			String tempUrl = null;
 			tempUrl = EsignetConfigManager.getEsignetBaseUrl();
 
-			// Sunbird RC is an external registry - override base URL and use the plain bearer path below.
 			boolean isSunbirdPolicy = testCaseDTO.getEndPoint().startsWith("$SUNBIRDBASEURL$");
 			if (isSunbirdPolicy) {
 				if (!EsignetUtil.isSunbirdAuthenticatorActive()) {
@@ -142,12 +123,13 @@ public class SimplePostForAutoGenId extends EsignetUtil implements ITest {
 			}
 
 			inputJson = EsignetUtil.inputstringKeyWordHandler(inputJson, testCaseName);
-			if (isSunbirdPolicy || getPluginName().equals("mock") == true) {
+			boolean isV3ClientMgmt = testCaseDTO.getEndPoint().contains("/v1/esignet/client-mgmt/client");
+			if (isSunbirdPolicy || isV3ClientMgmt || getPluginName().equals("mock") == true) {
 				if (!isSunbirdPolicy) {
 					inputJson = inputJsonKeyWordHandeler(inputJson, testCaseName);
 				}
 				if (isSunbirdPolicy) {
-					// Sunbird RC writes can be transiently UNSUCCESSFUL - retry with backoff, up to 10x.
+
 					int currLoopCount = 0;
 					do {
 						response = EsignetUtil.postWithBodyAndBearerToken(tempUrl + testCaseDTO.getEndPoint(), inputJson,
@@ -155,11 +137,7 @@ public class SimplePostForAutoGenId extends EsignetUtil implements ITest {
 						if (response != null && !response.asString().contains("UNSUCCESSFUL")) {
 							break;
 						}
-						// Only an explicit "UNSUCCESSFUL" body is safe to retry: it confirms nothing was
-						// created. A null response means the outcome is unknown - Sunbird RC may already
-						// have accepted it. Neither this codebase nor Sunbird RC's API exposes a
-						// deterministic policy id or idempotency key, and the postrequisite delete stores a
-						// single osid, so a duplicate record would be undeletable. Stop instead of retrying.
+
 						if (response == null) {
 							logger.error(testCaseName + ": Sunbird RC create returned no response - the policy may or "
 									+ "may not exist. Not retrying, to avoid an undeletable duplicate record. "
@@ -180,13 +158,13 @@ public class SimplePostForAutoGenId extends EsignetUtil implements ITest {
 					response = EsignetUtil.postWithBodyAndBearerToken(tempUrl + testCaseDTO.getEndPoint(), inputJson,
 							COOKIENAME, testCaseDTO.getRole(), testCaseDTO.getTestCaseName(), idKeyName);
 				}
-				// Only parse the id on a successful response - a failed body isn't valid JSON.
+
 				boolean isSuccessResponse = response != null && response.getStatusCode() >= 200
 						&& response.getStatusCode() < 300;
 				if (isSunbirdPolicy) {
 					if (isSuccessResponse) {
 						String osid = extractSunbirdOsid(new JSONObject(response.getBody().asString()));
-						// No osid means the postrequisite suite can't delete this policy - fail instead of leaking it.
+
 						if (osid == null || osid.isBlank()) {
 							throw new AdminTestException(
 									"Sunbird RC create succeeded but the response carried no osid: " + response.asString());
@@ -232,7 +210,6 @@ public class SimplePostForAutoGenId extends EsignetUtil implements ITest {
 
 	}
 
-	// Sunbird nests the id under result.<EntityType>.osid; entity name varies, so scan result's keys.
 	private String extractSunbirdOsid(JSONObject responseJson) {
 		JSONObject result = responseJson.optJSONObject("result");
 		if (result == null) {
@@ -247,11 +224,6 @@ public class SimplePostForAutoGenId extends EsignetUtil implements ITest {
 		return null;
 	}
 
-	/**
-	 * The method ser current test name to result
-	 *
-	 * @param result
-	 */
 	@AfterMethod(alwaysRun = true)
 	public void setResultTestName(ITestResult result) {
 		result.setTestName(testCaseName);

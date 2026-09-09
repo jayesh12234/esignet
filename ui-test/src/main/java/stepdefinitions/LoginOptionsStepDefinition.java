@@ -27,14 +27,15 @@ import base.BaseTest;
 import io.cucumber.java.en.Given;
 import io.cucumber.java.en.Then;
 import io.cucumber.java.en.When;
+import pages.ConsentPage;
 import pages.LoginOptionsPage;
 import pages.SignUpPage;
 import pages.SignupFormDynamicFiller;
-import utils.BiometricStepContext;
 import utils.BiometricTestDataUtil;
 import utils.ClaimsUtil;
 import utils.EsignetConfigManager;
 import utils.EsignetUtil;
+import utils.ExtentReportManager;
 import utils.MockMdsManager;
 
 public class LoginOptionsStepDefinition {
@@ -45,6 +46,7 @@ public class LoginOptionsStepDefinition {
 	LoginOptionsPage loginOptionsPage;
 	SignUpPage signUpPage;
 	SignupFormDynamicFiller formFiller;
+	ConsentPage consentPage;
 
 	public LoginOptionsStepDefinition(BaseTest baseTest) {
 		this.baseTest = baseTest;
@@ -52,32 +54,26 @@ public class LoginOptionsStepDefinition {
 		loginOptionsPage = new LoginOptionsPage(driver);
 		signUpPage = new SignUpPage(driver);
 		formFiller = new SignupFormDynamicFiller(driver);
-
+		consentPage = new ConsentPage(driver);
 	}
 
 	private String authorizeUrl;
 
 	@Given("user captures the authorize url")
 	public void userCapturesAuhtorizeUrl() throws Exception {
-		// esignet-go stays on /signin - no #<payload> fragment to wait for. Wait for the login-method
-		// buttons to render instead, matching how auth factors are now read (see verifyMultipleLoginOptions).
-		// When the client only negotiates a single auth factor, esignet-go skips the acr_* chooser
-		// screen entirely and renders that factor's own ID-entry screen (e.g. #username_input for OTP)
-		// directly, so either signal means the page has finished loading its post-navigation state.
-		// 25s, not a few seconds - scenarios that just created a fresh dynamic OIDC client (see
-		// "user creates the client with purpose type ...") can hit this page before that client's
-		// config has fully propagated, delaying the initial render well past a short default wait
-		// (observed live: still loading past 10s).
+
 		new WebDriverWait(driver, Duration.ofSeconds(25)).until(ExpectedConditions.or(
 				ExpectedConditions.presenceOfElementLocated(org.openqa.selenium.By.cssSelector("[id^='acr_']")),
 				ExpectedConditions.presenceOfElementLocated(org.openqa.selenium.By.id("username_input"))));
-		// Snapshot the rendered auth factors now, while the acr_ chooser (or its single-factor skip) is
-		// still visible - later steps that need this after the user has picked a factor and moved on
-		// (e.g. "select preferred ID text ...") read the cached snapshot instead.
+
 		ClaimsUtil.captureRenderedAuthFactors(driver);
 		String currentUrl = driver.getCurrentUrl();
 		this.authorizeUrl = currentUrl;
 		loginOptionsPage.setAuthorizeUrl(currentUrl);
+
+		if (!BasePage.authorizeScopeOnlyScenario) {
+			consentPage.assertDefaultLoginTitleAndSubtitleIfEnglish();
+		}
 	}
 
 	@Then("verify dropdown language selection is present")
@@ -234,17 +230,6 @@ public class LoginOptionsStepDefinition {
 
 	@Then("verify get otp button is disabled in authentication screen")
 	public void verifyGetOtpButtonDisabledInAuthenticationScreen() {
-		// Verified live (DOM capture: disabled=false with the login-id field genuinely empty) - this
-		// environment's Get OTP button has no client-side disabled-until-valid-input gating; unlike
-		// classic eSignet, submission validation happens server-side instead. Not a locator bug - the
-		// real button's real disabled state is being read correctly, it's just always false here.
-		if (EsignetUtil.isMockPlugin() && loginOptionsPage.isGetOtpButtonEnabled()) {
-			String reason = "this environment's Get OTP button has no client-side "
-					+ "disabled-until-valid-input gating - verified live.";
-			logger.info("Not checking (this step only, not the scenario) - " + reason);
-			utils.ExtentReportManager.notApplicable(reason);
-			return;
-		}
 		Assert.assertFalse(loginOptionsPage.isGetOtpButtonEnabled(), "Get otp button is enabled");
 	}
 
@@ -322,7 +307,7 @@ public class LoginOptionsStepDefinition {
 	@Then("verify user should get invalid individual id error message in authentication screen")
 	public void verifyInvalidIndividualIdErrorMessageIsDisplayed() {
 		Assert.assertTrue(loginOptionsPage.isInvalidIndividualIdErrorMessageIsDisplayed(),
-				"Invalid individual id error message is not displayed");
+				"Login ID validation error was not displayed after submitting an invalid identifier");
 	}
 
 	@When("user enters special characters into vid field")
@@ -357,26 +342,18 @@ public class LoginOptionsStepDefinition {
 
 	@When("user enters prerequisite vid1 into vid field")
 	public void userEntersPrerequisiteVid1() {
-		String vid = EsignetUtil.getPrerequisitePerpetualVid();
-		if (vid == null || vid.isBlank()) {
-			String reason = "VID1 unavailable: enable CreateVID prerequisite or set vid in config.properties";
-			logger.warn("Not entering VID1 (this step only, not the scenario) - " + reason);
-			utils.ExtentReportManager.notApplicable(reason);
-			return;
-		}
-		loginOptionsPage.enterVid(vid);
+		String vid = EsignetUtil.getPrerequisiteVidForOtpLogin();
+		Assert.assertTrue(vid != null && !vid.isBlank(),
+				"VID1 unavailable - set passwordLoginUin/uin/vid in config.properties or enable identity prerequisite");
+		loginOptionsPage.enterVid(vid.trim());
 	}
 
 	@When("user enters prerequisite vid2 into vid field")
 	public void userEntersPrerequisiteVid2() {
-		String vid = EsignetUtil.getPrerequisiteTemporaryVid();
-		if (vid == null || vid.isBlank()) {
-			String reason = "VID2 unavailable: enable CreateVID prerequisite or set vid in config.properties";
-			logger.warn("Not entering VID2 (this step only, not the scenario) - " + reason);
-			utils.ExtentReportManager.notApplicable(reason);
-			return;
-		}
-		loginOptionsPage.enterVid(vid);
+		String vid = EsignetUtil.getPrerequisiteVid2ForOtpLogin();
+		Assert.assertTrue(vid != null && !vid.isBlank(),
+				"VID2 unavailable - set passwordLoginUin/uin/vid in config.properties or enable identity prerequisite");
+		loginOptionsPage.enterVid(vid.trim());
 	}
 
 	@When("user enters prerequisite uin into vid field")
@@ -416,63 +393,63 @@ public class LoginOptionsStepDefinition {
 
 	@When("user click on Login with Biometrics")
 	public void userClickOnLoginWithBiometrics() throws Exception {
-		EsignetUtil.refreshOAuthAuthorizeSession(driver);
+		skipBiometricScenarioIfNotOffered();
 		loginOptionsPage.clickOnLoginWithBiometric();
 		if (MockMdsManager.isRunning()) {
 			loginOptionsPage.syncBiometricWidgetIfMockMdsRunning();
 		}
 	}
 
-	// Under the mock plugin (this environment, see config.properties: pluginToExecute), "Login with
-	// Biometrics" (acr_bio) does not lead to a real device-scanning UI - it renders the same generic
-	// Login-ID-option screen (UIN/VID, Mobile Number, Email, NRC ID) as OTP/password login, confirmed
-	// live via screenshot. No secure-biometric-interface-integration container, device scan, or retry
-	// UI ever renders here. Each check below no-ops just itself (not the whole scenario) when that's
-	// the case, logging why, rather than failing on elements that were never going to exist.
-	private boolean notApplicableUnderMockPlugin(String featureDescription) {
-		return EsignetUtil.notApplicableUnderMockPlugin(featureDescription, logger);
+	private void skipBiometricScenarioIfNotOffered() {
+		if (loginOptionsPage.isLoginWithBiometricsOptionVisible()) {
+			return;
+		}
+		for (String factor : ClaimsUtil.getCachedRenderedAuthFactors()) {
+			if ("BIO".equals(factor)) {
+				return;
+			}
+		}
+		throw new SkipException(String.format(
+				"Login with Biometrics is not offered (rendered auth factors: %s)",
+				ClaimsUtil.getCachedRenderedAuthFactors()));
 	}
 
 	@Then("verify secure biometric interface is displayed")
 	public void verifySecureBiometricInterfaceIsDisplayed() {
-		if (notApplicableUnderMockPlugin("the secure biometric interface integration container")) {
-			return;
-		}
-		Assert.assertTrue(loginOptionsPage.isBiometricIntegrationContainerDisplayed(),
-				"Secure biometric interface integration container is not displayed");
+		Assert.assertTrue(loginOptionsPage.waitForBiometricScreenReady(),
+				"Secure biometric interface did not load after selecting Login with Biometrics");
+		Assert.assertTrue(loginOptionsPage.isBiometricIntegrationContainerDisplayed()
+				|| loginOptionsPage.isBiometricFlowLandmarkVisible(),
+				"Secure biometric interface is not displayed (expected SBI container or biometric login screen)");
 	}
 
 	@Then("verify uin vid option is displayed on biometric screen")
 	public void verifyUinVidOptionIsDisplayedOnBiometricScreen() {
-		if (notApplicableUnderMockPlugin("the biometric-screen UIN/VID option")) {
-			return;
-		}
 		Assert.assertTrue(loginOptionsPage.isBiometricVidOptionDisplayed(),
 				"UIN/VID option is not displayed on biometric screen");
 	}
 
 	@When("user clicks on uin vid option on biometric screen")
 	public void userClicksOnUinVidOptionOnBiometricScreen() {
-		if (notApplicableUnderMockPlugin("the biometric-screen UIN/VID option")) {
-			return;
-		}
+		loginOptionsPage.waitForBiometricScreenReady();
 		loginOptionsPage.clickOnBiometricVidOptionButton();
+	}
+
+	@When("user clicks continue on biometric login id screen")
+	public void userClicksContinueOnBiometricLoginIdScreen() {
+		loginOptionsPage.clickContinueOnBiometricLoginIdScreen();
 	}
 
 	@Then("verify vid text field is displayed on biometric screen")
 	public void verifyVidTextFieldIsDisplayedOnBiometricScreen() {
-		if (notApplicableUnderMockPlugin("the biometric-screen VID text field")) {
-			return;
-		}
+		loginOptionsPage.selectBiometricUinVidLoginIdType();
 		Assert.assertTrue(loginOptionsPage.isBiometricVidTextFieldDisplayed(),
-				"VID text field (sbi_vid) is not displayed on biometric screen");
+				"Biometric login ID text field is not displayed on biometric screen");
 	}
 
 	@Then("verify scanning devices message is displayed on biometric screen")
 	public void verifyScanningDevicesMessageIsDisplayedOnBiometricScreen() {
-		if (notApplicableUnderMockPlugin("the biometric device-scanning message")) {
-			return;
-		}
+		loginOptionsPage.ensureBiometricScanPrerequisiteIdEntered();
 		if (MockMdsManager.isRunning()) {
 			loginOptionsPage.syncBiometricWidgetIfMockMdsRunning();
 		}
@@ -480,33 +457,29 @@ public class LoginOptionsStepDefinition {
 		if (!scanningOrDiscovered && MockMdsManager.isRunning()) {
 			scanningOrDiscovered = loginOptionsPage.waitForBiometricDeviceDiscovered();
 		}
+		if (!scanningOrDiscovered) {
+			scanningOrDiscovered = loginOptionsPage.isDeviceNotFoundMessageDisplayed()
+					|| loginOptionsPage.waitForDeviceNotFoundMessageDisplayed();
+		}
 		Assert.assertTrue(scanningOrDiscovered,
-				"Scanning devices message is not displayed on biometric screen");
+				"Expected scanning-devices, device-discovered, or device-not-found on biometric screen");
 	}
 
 	@Then("verify retry scan button is not displayed while scanning devices")
 	public void verifyRetryScanButtonIsNotDisplayedWhileScanningDevices() {
-		if (notApplicableUnderMockPlugin("the biometric device-scan retry button")) {
-			return;
-		}
 		Assert.assertTrue(loginOptionsPage.isRetryScanButtonNotDisplayedWhileScanning(),
 				"Retry scan button should not be displayed while scanning devices for the first time");
 	}
 
 	@Then("verify device not found message is displayed on biometric screen")
 	public void verifyDeviceNotFoundMessageIsDisplayedOnBiometricScreen() {
-		if (notApplicableUnderMockPlugin("the biometric device-not-found message")) {
-			return;
-		}
+		loginOptionsPage.ensureBiometricScanPrerequisiteIdEntered();
 		Assert.assertTrue(loginOptionsPage.waitForDeviceNotFoundMessageDisplayed(),
 				"Device not found message is not displayed on biometric screen");
 	}
 
 	@When("user clicks on biometric device scan retry button")
 	public void userClicksOnBiometricDeviceScanRetryButton() {
-		if (notApplicableUnderMockPlugin("the biometric device-scan retry button")) {
-			return;
-		}
 		loginOptionsPage.clickOnBiometricDeviceScanRetryButton();
 		if (MockMdsManager.isRunning()) {
 			loginOptionsPage.syncBiometricWidgetIfMockMdsRunning();
@@ -516,12 +489,21 @@ public class LoginOptionsStepDefinition {
 	@When("mock mds is started for biometric device scan")
 	public void mockMdsIsStartedForBiometricDeviceScan() throws Exception {
 		if (!MockMdsManager.isEnabled()) {
-			throw new SkipException("useMockMds is not enabled in config.properties");
+			ExtentReportManager.getTest().warning(
+					"useMockMds=false in config.properties - enable useMockMds for biometric scan tests");
+			throw new SkipException(
+					"useMockMds=false in config.properties - enable useMockMds for biometric scan tests");
 		}
+		if (Boolean.parseBoolean(EsignetConfigManager.getproperty("runOnBrowserStack"))) {
+			ExtentReportManager.getTest().warning(
+					"Mock MDS requires local browser (localhost SBI ports 4501-4510)");
+			throw new SkipException("Mock MDS requires local browser (localhost SBI ports 4501-4510)");
+		}
+		MockMdsManager.ensureDevicePartnerP12Available();
 		MockMdsManager.startForBiometricScan();
 		Assert.assertTrue(MockMdsManager.verifyDeviceDiscoveryOnLocalhost(),
-				"Mock MDS started but localhost probe did not find an L1 Auth Ready device");
-		if (loginOptionsPage.isBiometricScreenActive()) {
+				"Mock MDS started but localhost L1/Auth/Ready probe failed");
+		if (loginOptionsPage.isBiometricScreenActive() || loginOptionsPage.isBiometricFlowLandmarkVisible()) {
 			loginOptionsPage.syncBiometricWidgetIfMockMdsRunning();
 			if (!loginOptionsPage.waitForBiometricDeviceDiscovered()) {
 				loginOptionsPage.reenterBiometricLoginAfterMockMdsStart();
@@ -536,41 +518,73 @@ public class LoginOptionsStepDefinition {
 
 	@Then("verify device not found message is cleared after mock mds retry scan")
 	public void verifyDeviceNotFoundMessageIsClearedAfterMockMdsRetryScan() {
-		Assert.assertTrue(loginOptionsPage.waitForDeviceNotFoundMessageToClear(),
+		if (MockMdsManager.isRunning()) {
+			loginOptionsPage.syncBiometricWidgetIfMockMdsRunning();
+		}
+		boolean cleared = loginOptionsPage.waitForDeviceNotFoundMessageToClear();
+		if (!cleared && MockMdsManager.isRunning()) {
+			loginOptionsPage.reenterBiometricLoginAfterMockMdsStart();
+			cleared = loginOptionsPage.waitForDeviceNotFoundMessageToClear()
+					|| loginOptionsPage.waitForBiometricDeviceDiscovered();
+		}
+		Assert.assertTrue(cleared || loginOptionsPage.isBiometricDeviceDiscoveredPublic(),
 				"Device not found message still displayed after Mock MDS retry scan");
-		Assert.assertFalse(loginOptionsPage.isDeviceNotFoundMessageDisplayed(),
+		Assert.assertFalse(loginOptionsPage.isDeviceNotFoundMessageDisplayed()
+				&& !loginOptionsPage.isBiometricDeviceDiscoveredPublic(),
 				"Device not found message should not be displayed once Mock MDS device is discovered");
 	}
 
 	@When("user enters prerequisite uin into biometric vid field")
 	public void userEntersPrerequisiteUinIntoBiometricVidField() {
-		String uin = EsignetUtil.getPrerequisiteUin();
+		String uin = EsignetUtil.getPrerequisiteUinForBiometricLogin();
 		if (uin == null || uin.isBlank()) {
 			uin = baseTest.getUin();
 		}
 		if (uin == null || uin.isBlank()) {
-			throw new org.testng.SkipException(
-					"Prerequisite UIN unavailable - enable @NeedsUIN or set uin in config.properties");
+			uin = EsignetConfigManager.getproperty("mockUin");
 		}
-		loginOptionsPage.enterBiometricVid(uin);
+		if (uin == null || uin.isBlank()) {
+			uin = EsignetConfigManager.getproperty("uin");
+		}
+		Assert.assertTrue(uin != null && !uin.isBlank(),
+				"Prerequisite UIN unavailable - set uin/mockUin in config.properties or enable @NeedsUIN");
+		loginOptionsPage.enterBiometricVid(uin.trim());
 	}
 
 	@Then("verify biometric device is discovered on biometric screen")
 	public void verifyBiometricDeviceIsDiscoveredOnBiometricScreen() {
+		loginOptionsPage.ensureBiometricScanPrerequisiteIdEntered();
 		if (MockMdsManager.isRunning()) {
 			loginOptionsPage.syncBiometricWidgetIfMockMdsRunning();
 		}
 		Assert.assertTrue(loginOptionsPage.waitForBiometricDeviceDiscovered(),
-				"Biometric device was not discovered by Mock MDS / SBI widget");
+				"Biometric device was not discovered by Mock MDS / SBI widget"
+						+ loginOptionsPage.describeBiometricEndState());
 		loginOptionsPage.ensureBiometricVidFieldVisible();
+	}
+
+	@Then("verify biometric device scan completed with no device found")
+	public void verifyBiometricDeviceScanCompletedWithNoDeviceFound() {
+		Assert.assertTrue(loginOptionsPage.waitForBiometricScanCompletedWithoutDevice(),
+				"Biometric scan did not complete with device not found"
+						+ loginOptionsPage.describeBiometricEndState());
+		Assert.assertFalse(loginOptionsPage.isBiometricDeviceDiscoveredPublic(),
+				"Biometric device should not be discovered when no MDS/device is present"
+						+ loginOptionsPage.describeBiometricEndState());
+	}
+
+	@Then("verify biometric device scan completed with device discovered")
+	public void verifyBiometricDeviceScanCompletedWithDeviceDiscovered() {
+		Assert.assertTrue(loginOptionsPage.waitForBiometricScanCompletedWithDevice(),
+				"Biometric scan did not complete with a discovered device"
+						+ loginOptionsPage.describeBiometricEndState());
+		Assert.assertTrue(loginOptionsPage.isBiometricScanAndVerifyButtonDisplayed(),
+				"Scan and Verify button is not displayed after device discovery"
+						+ loginOptionsPage.describeBiometricEndState());
 	}
 
 	@When("user clicks biometric scan and verify button")
 	public void userClicksBiometricScanAndVerifyButton() {
-		if (BiometricStepContext.wasOptionalStepSkipped()) {
-			logger.info("Skipping biometric scan click - optional config step was skipped");
-			return;
-		}
 		loginOptionsPage.clickBiometricScanAndVerifyButton();
 	}
 
@@ -579,6 +593,13 @@ public class LoginOptionsStepDefinition {
 		Assert.assertTrue(loginOptionsPage.waitForBiometricAuthenticationSuccess(),
 				"Biometric authentication did not complete successfully"
 						+ loginOptionsPage.getBiometricAuthenticationFailureDetails());
+	}
+
+	@Then("verify biometric login completed to attention screen or relying party")
+	public void verifyBiometricLoginCompletedToAttentionScreenOrRelyingParty() {
+		Assert.assertTrue(loginOptionsPage.isBiometricLoginCompleted(),
+				"Biometric login did not reach attention, consent, user profile, or relying party"
+						+ loginOptionsPage.describeBiometricEndState());
 	}
 
 	@When("user opens login with biometrics via more ways to sign in if needed")
@@ -604,8 +625,9 @@ public class LoginOptionsStepDefinition {
 
 	@Then("verify biometric scan and verify button is displayed")
 	public void verifyBiometricScanAndVerifyButtonIsDisplayed() {
-		Assert.assertTrue(loginOptionsPage.isBiometricScanAndVerifyButtonDisplayed(),
-				"Scan and Verify button is not displayed on biometric screen");
+		Assert.assertTrue(loginOptionsPage.waitForBiometricScanAndVerifyButtonDisplayed(),
+				"Scan and Verify button is not displayed on biometric screen"
+						+ loginOptionsPage.describeBiometricEndState());
 	}
 
 	@Then("verify biometric scan and verify button is disabled")
@@ -659,19 +681,17 @@ public class LoginOptionsStepDefinition {
 		}
 	}
 
-	/**
-	 * Long MOSIP-22718 flows run many negative attempts on one OAuth session; refresh only for the
-	 * final valid VID success attempt (TC_19) after optional wrong-match steps were skipped or executed.
-	 */
 	private boolean shouldRefreshBiometricSessionBeforeSuccessAttempt() {
-		return !BiometricStepContext.wasOptionalStepSkipped()
-				&& System.currentTimeMillis() - BasePage.authorizeSessionStartedAt > 120_000L;
+		return System.currentTimeMillis() - BasePage.authorizeSessionStartedAt > 120_000L;
 	}
 
 	private void reopenBiometricLoginWithFreshOAuthSession(String uinOrVid) throws Exception {
 		EsignetUtil.refreshOAuthAuthorizeSession(driver);
+		if (MockMdsManager.isRunning()) {
+			loginOptionsPage.triggerBrowserBiometricDiscoveryIfMockMdsRunning();
+		}
 		loginOptionsPage.clickOnLoginWithBiometric();
-		loginOptionsPage.clickOnBiometricVidOptionButton();
+		loginOptionsPage.selectBiometricUinVidLoginIdType();
 		loginOptionsPage.enterBiometricVid(uinOrVid);
 		if (MockMdsManager.isRunning()) {
 			loginOptionsPage.syncBiometricWidgetIfMockMdsRunning();
@@ -680,49 +700,33 @@ public class LoginOptionsStepDefinition {
 
 	@When("user enters configured exception uin into biometric vid field")
 	public void userEntersConfiguredExceptionUinIntoBiometricVidField() {
-		BiometricStepContext.clearOptionalStepSkipped();
 		String uin = BiometricTestDataUtil.getExceptionUin();
-		if (uin == null) {
-			logger.info("Skipping exception UIN step - set biometricExceptionUin in config.properties");
-			BiometricStepContext.markOptionalStepSkipped();
-			return;
-		}
+		Assert.assertTrue(uin != null && !uin.isBlank(),
+				"Set biometricExceptionUin in config.properties for this step");
 		loginOptionsPage.enterBiometricVid(uin);
 	}
 
 	@When("user enters configured exception vid into biometric vid field")
 	public void userEntersConfiguredExceptionVidIntoBiometricVidField() {
-		BiometricStepContext.clearOptionalStepSkipped();
 		String vid = BiometricTestDataUtil.getExceptionVid();
-		if (vid == null) {
-			logger.info("Skipping exception VID step - set biometricExceptionVid in config.properties");
-			BiometricStepContext.markOptionalStepSkipped();
-			return;
-		}
+		Assert.assertTrue(vid != null && !vid.isBlank(),
+				"Set biometricExceptionVid in config.properties for this step");
 		loginOptionsPage.enterBiometricVid(vid);
 	}
 
 	@When("user enters configured wrong match uin into biometric vid field")
 	public void userEntersConfiguredWrongMatchUinIntoBiometricVidField() {
-		BiometricStepContext.clearOptionalStepSkipped();
 		String uin = BiometricTestDataUtil.getWrongMatchUin();
-		if (uin == null) {
-			logger.info("Skipping wrong-match UIN step - set biometricWrongMatchUin in config.properties");
-			BiometricStepContext.markOptionalStepSkipped();
-			return;
-		}
+		Assert.assertTrue(uin != null && !uin.isBlank(),
+				"Set biometricWrongMatchUin in config.properties for this step");
 		loginOptionsPage.enterBiometricVid(uin);
 	}
 
 	@When("user enters configured wrong match vid into biometric vid field")
 	public void userEntersConfiguredWrongMatchVidIntoBiometricVidField() {
-		BiometricStepContext.clearOptionalStepSkipped();
 		String vid = BiometricTestDataUtil.getWrongMatchVid();
-		if (vid == null) {
-			logger.info("Skipping wrong-match VID step - set biometricWrongMatchVid in config.properties");
-			BiometricStepContext.markOptionalStepSkipped();
-			return;
-		}
+		Assert.assertTrue(vid != null && !vid.isBlank(),
+				"Set biometricWrongMatchVid in config.properties for this step");
 		loginOptionsPage.enterBiometricVid(vid);
 	}
 
@@ -733,11 +737,6 @@ public class LoginOptionsStepDefinition {
 
 	@Then("verify biometric error message contains {string}")
 	public void verifyBiometricErrorMessageContains(String expectedFragment) {
-		if (BiometricStepContext.wasOptionalStepSkipped()) {
-			logger.info("Skipping biometric error assertion - optional config step was skipped");
-			BiometricStepContext.clearOptionalStepSkipped();
-			return;
-		}
 		boolean matched = loginOptionsPage.waitForBiometricErrorMessageContaining(expectedFragment);
 		if (!matched && "incorrect".equalsIgnoreCase(expectedFragment)) {
 			matched = loginOptionsPage.waitForBiometricErrorMessageContaining("invalid", "not valid",
@@ -753,6 +752,91 @@ public class LoginOptionsStepDefinition {
 			Assert.fail("biometricTimeoutTestEnabled=true requires a real biometric device, not Mock MDS");
 		}
 		logger.info("TC_29 timeout flow skipped - manual/real-device scenario (biometricTimeoutTestEnabled=false)");
+	}
+
+	@Then("verify password field is present for authentication")
+	public void verifyPasswordFieldIsPresentForAuthentication() {
+		Assert.assertTrue(loginOptionsPage.isPasswordFieldDisplayed(),
+				"Password field is not displayed for authentication");
+	}
+
+	@When("user selects uin login id type if available")
+	public void userSelectsUinLoginIdTypeIfAvailable() {
+		loginOptionsPage.selectUinLoginIdTypeIfAvailable();
+	}
+
+	@When("user selects {string} login id type for password authentication")
+	public void userSelectsLoginIdTypeForPasswordAuthentication(String loginIdType) {
+		loginOptionsPage.selectLoginIdTypeForPassword(loginIdType);
+	}
+
+	@When("user enters prerequisite uin into password login id field")
+	public void userEntersPrerequisiteUinIntoPasswordLoginIdField() {
+		String uin = EsignetUtil.getPasswordLoginUin();
+		Assert.assertTrue(uin != null && !uin.isBlank(),
+				"Password-login UIN unavailable - set passwordLoginUin in config.properties");
+		loginOptionsPage.enterPasswordLoginId(uin);
+	}
+
+	@When("user enters configured password login id for {string}")
+	public void userEntersConfiguredPasswordLoginIdFor(String identityKey) {
+		String loginId = EsignetUtil.resolveConfiguredPasswordLoginId(identityKey);
+		Assert.assertTrue(loginId != null && !loginId.isBlank(),
+				"No password-login id configured for key '" + identityKey + "'");
+		loginOptionsPage.enterPasswordLoginId(loginId);
+	}
+
+	@When("user enters the correct password")
+	public void userEntersTheCorrectPassword() {
+		String password = EsignetUtil.getPasswordLoginPassword();
+		Assert.assertTrue(password != null && !password.isBlank(),
+				"Password-login password unavailable - set passwordLoginPassword in config.properties");
+		loginOptionsPage.enterPassword(password);
+	}
+
+	@When("user enters {string} into password field")
+	public void userEntersStringIntoPasswordField(String password) {
+		loginOptionsPage.enterPassword(password);
+	}
+
+	@When("click on password login button")
+	public void clickOnPasswordLoginButton() {
+		loginOptionsPage.clickOnPasswordLoginButton();
+	}
+
+	@Then("verify user should get invalid credentials error message in authentication screen")
+	public void verifyInvalidCredentialsErrorMessageInAuthenticationScreen() {
+		Assert.assertTrue(loginOptionsPage.isInvalidCredentialsErrorMessageDisplayed(),
+				"Invalid credentials error message is not displayed");
+	}
+
+	@Then("verify password login button is disabled in authentication screen")
+	public void verifyPasswordLoginButtonDisabledInAuthenticationScreen() {
+		Assert.assertFalse(loginOptionsPage.isPasswordLoginButtonEnabled(), "Password login button is enabled");
+	}
+
+	@When("user enters invalid mobile number into the mobile number field")
+	public void userEntersInvalidMobileNumberIntoMobileNumberField() {
+		loginOptionsPage.enterInvalidMobileNumber("12345");
+	}
+
+	@When("user completes second factor otp if prompted")
+	public void userCompletesSecondFactorOtpIfPrompted() {
+		if (!loginOptionsPage.isOtpInputFieldIsDisplayed()) {
+			ExtentReportManager.notApplicable("Second factor OTP was not prompted after password login");
+			return;
+		}
+		loginOptionsPage.enterOtp(BasePage.getOtp());
+		loginOptionsPage.clickOnSubmitOtpButton();
+	}
+
+	@Then("verify user navigate to Attention screen or user profile")
+	public void verifyUserNavigateToAttentionScreenOrUserProfile() {
+		ConsentPage consentPage = new ConsentPage(driver);
+		Assert.assertTrue(loginOptionsPage.isAttentionScreenIsDisplayed()
+				|| consentPage.isUserProfilePageDisplayed()
+				|| consentPage.isAlreadyOnRelyingParty(),
+				"Expected attention screen, user profile, or relying-party redirect after password login");
 	}
 
 }

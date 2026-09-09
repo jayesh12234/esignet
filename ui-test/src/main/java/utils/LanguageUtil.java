@@ -25,29 +25,20 @@ public class LanguageUtil {
     public static List<String> supportedLanguages = new ArrayList<>();
     private static final Logger logger = Logger.getLogger(LanguageUtil.class);
 
-    // esignet-go doesn't serve /locales/default.json (see the fallback below), so languagesMap stays
-    // empty and can't supply real display names. The language-switcher dropdown's option text is a
-    // static map baked into the frontend bundle, not fetched from any API - verified live against the
-    // login page for these codes. Extend as more languages are exercised.
     private static final Map<String, String> FRONTEND_DISPLAY_NAMES = Map.of(
             "eng", "English",
-            "khm", "Khmer",
+            "khm", "ខ្មែរ",
             "hin", "हिन्दी",
             "fra", "français",
             "spa", "español");
 
-    // Same static display names as FRONTEND_DISPLAY_NAMES, keyed by 2-letter ISO code instead of the
-    // 3-letter one - needed by getDisplayNameFromIso(), which is always called with a 2-letter code.
     private static final Map<String, String> FRONTEND_DISPLAY_NAMES_BY_ISO2 = Map.of(
             "en", "English",
-            "km", "Khmer",
+            "km", "ខ្មែរ",
             "hi", "हिन्दी",
             "fr", "français",
             "es", "español");
 
-    // 3-letter -> 2-letter fallback for the same languages, for getIsoLanguageCode() on environments
-    // where langCodeMappingMap stays empty (locales/default.json not served - see the static init
-    // fallback above). config.properties' runLanguage (e.g. "eng") is always a 3-letter code.
     private static final Map<String, String> FRONTEND_ISO2_BY_CODE = Map.of(
             "eng", "en",
             "khm", "km",
@@ -57,35 +48,26 @@ public class LanguageUtil {
 
     static {
         try {
-            // URL from config
+
             String localeUrl = EsignetConfigManager.getproperty("localeUrl");
             String url = (localeUrl.endsWith("/") ? localeUrl : localeUrl + "/") + "locales/default.json";
 
-            // Download JSON content as String
             String jsonContent = downloadJson(url);
 
-            // Parse JSON
             ObjectMapper mapper = new ObjectMapper();
             JsonNode rootNode = mapper.readTree(jsonContent);
 
-            // Populate languages_2Letters map
             rootNode.get("languages_2Letters").fields()
                     .forEachRemaining(entry -> languagesMap.put(entry.getKey(), entry.getValue().asText()));
 
-            // Populate langCodeMapping map
             rootNode.get("langCodeMapping").fields()
                     .forEachRemaining(entry -> langCodeMappingMap.put(entry.getKey(), entry.getValue().asText()));
 
-            // Populate keys list
             supportedLanguages = new ArrayList<>(langCodeMappingMap.keySet());
 
         } catch (Exception e) {
             logger.error("Error language locale JSON", e);
 
-            // Some eSignet deployments (e.g. the Thunder/eSignet-go build) don't serve locales/default.json
-            // as a static file - fall back to config's runLanguage so the run isn't blocked. Display-name and
-            // ISO-code lookups (languagesMap/langCodeMappingMap) stay empty in this fallback and degrade to
-            // returning the raw language code (see getDisplayName/getIsoLanguageCode).
             String runLanguage = EsignetConfigManager.getproperty("runLanguage");
             if (runLanguage != null && !runLanguage.isBlank()) {
                 supportedLanguages = Arrays.stream(runLanguage.split(","))
@@ -97,10 +79,6 @@ public class LanguageUtil {
         }
     }
 
-    /**
-     * Returns the display name for a given language code.
-     * If code is not found, returns the code itself.
-     */
     public static String getDisplayName(String code) {
         String twoLetter = langCodeMappingMap.getOrDefault(code, code);
         String fromApi = languagesMap.get(twoLetter);
@@ -111,10 +89,6 @@ public class LanguageUtil {
         return FRONTEND_DISPLAY_NAMES.getOrDefault(key, code);
     }
 
-    /**
-     * Returns the two-letter code for a given language code.
-     * If code is not found, returns the code itself.
-     */
     public static String getIsoLanguageCode(String code) {
         String mapped = langCodeMappingMap.get(code);
         if (mapped != null) {
@@ -124,9 +98,6 @@ public class LanguageUtil {
         return FRONTEND_ISO2_BY_CODE.get(key);
     }
 
-    /**
-     * Resolves a browser-reported locale (e.g. {@code en-US}) to a supported two-letter code.
-     */
     public static String resolveFromBrowserLocale(String navigatorLanguage) {
         if (navigatorLanguage == null || navigatorLanguage.isBlank()) {
             return null;
@@ -155,23 +126,11 @@ public class LanguageUtil {
         return resolvedActual != null && resolvedActual.equalsIgnoreCase(resolvedExpected);
     }
 
-    /**
-     * Neutral browser locale so navigator.language does not match any supported IDP language (TC_14).
-     * "xx" is not a locale Chrome's --lang flag recognizes, so it's silently ignored - navigator.language
-     * stays on the OS default (en-US), which always resolves to a supported language here, so the TC_14
-     * assertion that depends on it can never pass on this deployment. Tried switching this to a real,
-     * Chrome-recognized locale ("de") to actually exercise the fallback - confirmed live 2026-08-21 this
-     * regresses ~7 unrelated scenarios, since applyBrowserLocale() applies it to every scenario's browser
-     * session, not just TC_14. Reverted; TC_14 stays a known, environment-specific failure until the
-     * locale override can be scoped to just that scenario (e.g. via a tag-driven browser option) instead
-     * of applied globally.
-     */
     public static String getNeutralBrowserLocale() {
         String locale = EsignetConfigManager.getproperty("defaultLangTestNeutralLocale");
         return (locale != null && !locale.isBlank()) ? locale.trim() : "xx";
     }
 
-    /** True when the app persisted the synthetic neutral locale instead of DEFAULT_LANG (MOSIP-24002 TC_14). */
     public static boolean isNeutralStoredLanguage(String storedLanguage) {
         if (storedLanguage == null || storedLanguage.isBlank()) {
             return false;
@@ -200,9 +159,6 @@ public class LanguageUtil {
         }
     }
 
-    /**
-     * Resolves {@code DEFAULT_LANG} from env-config (2- or 3-letter) to a supported two-letter code.
-     */
     public static String resolveDefaultLangToIsoCode(String defaultLang) {
         if (defaultLang == null || defaultLang.isBlank()) {
             return null;
@@ -225,9 +181,7 @@ public class LanguageUtil {
         if (fromApi != null) {
             return fromApi;
         }
-        // languagesMap stays empty on environments (e.g. esignet-go) that don't serve
-        // /locales/default.json - see the static init fallback above. Fall back to the same static
-        // display names getDisplayName() uses, just keyed by the 2-letter code this method receives.
+
         String key = isoCode == null ? "" : isoCode.trim().toLowerCase();
         return FRONTEND_DISPLAY_NAMES_BY_ISO2.getOrDefault(key, isoCode);
     }

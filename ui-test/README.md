@@ -95,11 +95,13 @@ The plugin is **auto-detected** from the eSignet server's actuator (`EsignetUtil
 
 | Mode | Identity source | Client creation |
 |------|------------------|------------------|
-| `mosipid` | Real ID Repository identity, created by the `AddIdentity` prerequisite | Real partner/policy chain: `CreatePolicyGroup → DefinePolicy → PublishPolicy → CreatePartner → UploadCACertificate → UploadPartnerCertificate → RequestAPIKeyForAuthPartner → ApproveAPIKey → OIDCClient` (`/v1/partnermanager/oidc/client`) |
+| `mosipid` | Real ID Repository identity, created by the `AddIdentity` prerequisite | Default client: partner/policy chain ending in `OIDCClient` (`/v1/partnermanager/oidc/client`). Purpose-type/PAR clients: same `OIDCClientV3MOCK` `/v1/esignet/client-mgmt/client` path as mock |
 | `mock` | MOSIP mock-identity-system, created by `AddIdentityMock` | `OIDCClientV3MOCK`, `/v1/esignet/client-mgmt/client` |
 | `mock` + Sunbird RC-backed | Same as `mock` | `/v1/esignet/client-mgmt/oauth-client` (V3 500s against Sunbird) + `CreatePolicySunBirdR`, a registry policy used as KBI credentials |
 
 Prerequisites specific to one plugin are skipped for the others automatically (`EsignetUtil.isTestCaseValidForExecution`), so the same `esignetPrerequisiteSuite.xml` runs unmodified regardless of which plugin the server turns out to be.
+
+Mock MDS biometric login **generates** a Device Provider `device-dsk-partner.p12` on every run (`Runner.generateDevicePartnerP12()`, via `p12EnvEndpoint` + Keycloak/PMS). The keystore is not checked into git and is not baked into the Docker image. Mock SBI still expects the working-directory filename `device-dsk-partner.p12`; the generated file is copied there after PMS upload. Set `p12EnvEndpoint` (and testrig/pms client secrets) to the env that should issue the cert; the UI can stay on a different host (`baseurl` / `eSignetbaseurl`).
 
 ## 🪪 Login identity sourcing
 
@@ -302,7 +304,7 @@ Tags that change how a scenario is set up (rather than just selecting it):
 | Tag | Effect |
 |-----|--------|
 | `@PAR` | Runs the scenario through the PAR flow using the PAR-mandated client. Skipped when the environment does not support PAR. See [PAR & DPoP](#-par--dpop). |
-| `@PurposeLogin`, `@PurposeLink`, `@PurposeVerify`, `@PurposeNone`, `@NoPurpose`, `@NoTitleAndSubTitle`, `@EmptyTitleAndSubTitle`, `@SingleAuthFactor` | Use a purpose-type-specific OIDC client instead of the default one. Skipped when running with the `mosipid` plugin, since these clients are only created under `mock` (`/v1/esignet/client-mgmt/client`). |
+| `@PurposeLogin`, `@PurposeLink`, `@PurposeVerify`, `@PurposeNone`, `@NoPurpose`, `@NoTitleAndSubTitle`, `@EmptyTitleAndSubTitle`, `@SingleAuthFactor` | Use a purpose-type-specific OIDC client instead of the default one. Those clients are created via `/v1/esignet/client-mgmt/client` for both `mock` and `mosipid` (self-skipped only on a Sunbird RC-backed server, which has no V3 counterpart). |
 | `@registrationProcess` | Marks the one real signup-through-the-UI scenario. Skipped automatically if the signup service isn't reachable in this environment. See [Login identity sourcing](#-login-identity-sourcing). |
 
 ---
@@ -332,6 +334,78 @@ Tags that change how a scenario is set up (rather than just selecting it):
     ```java
     Thread.currentThread().setName(pickle.getPickle().getName());
     ```
+
+---
+
+## 🔧 Troubleshooting
+
+### Redirect URI mismatch (`request_uri_error` / "Sign-in form is not available")
+
+When using a **pre-provisioned OIDC client** (`oidcClientId` set and `runPrerequisiteSuite=false`), the client's
+`redirect_uris` in the eSignet database must **exactly** match what the suite sends on every `/authorize` and PAR
+request:
+
+```
+<baseurl>userprofile
+```
+
+For the esqa Thunder environment that is:
+
+```
+https://healthservices-go.esqa.mosip.net/userprofile
+```
+
+(note the **s** in `healthservices` — a common typo is `healthservice-go`, which will fail).
+
+**Symptoms**
+
+| What you see | Where |
+|--------------|-------|
+| `error=request_uri_error` — "Failed to get Request URI" | Relying party (health-services portal) after PAR |
+| "Sign-in form is not available at the moment" | eSignet `/signin` page |
+
+**Fix via Postman**
+
+Use the `Patch OIDC client` request in `postman-collection/eSignet.postman_collection.json` (`OIDC Client Mgmt → Mock`).
+
+1. **Get Auth token** — `Mock → Get Auth token` (Keycloak client credentials; needs `update_oidc_client` scope).
+2. **Get CSRF token** — `Mock → Get CSRF token`.
+3. Set environment variables:
+
+   | Variable | Value (esqa example) |
+   |----------|----------------------|
+   | `url` | `https://esignet-go.esqa.mosip.net` |
+   | `iam_url` | `https://iam.esqa.mosip.net` |
+   | `client_id` | `Test-postman-client15` |
+   | `redirection_url` | `https://healthservices-go.esqa.mosip.net/userprofile` |
+
+4. **Patch OIDC client** — `PATCH {{url}}/v1/esignet/client-mgmt/client/{{client_id}}`
+
+   Headers: `Authorization: Bearer {{authtoken}}`, `X-XSRF-TOKEN: {{csrf_token}}`
+
+   Minimal body (only `redirectUris` needs to change; PATCH updates provided fields only):
+
+   ```json
+   {
+       "requestTime": "2026-09-02T09:00:00.000Z",
+       "request": {
+           "redirectUris": [
+               "https://healthservices-go.esqa.mosip.net/userprofile"
+           ]
+       }
+   }
+   ```
+
+   Or use the collection's full PATCH body and set `redirection_url` as above — it also sends `encPublicKey`
+   (generated by the pre-request script) and the remaining client fields.
+
+5. Expect HTTP 200 with `"status": "ACTIVE"` in the response. Re-run the UI suite — no `config.properties` change needed.
+
+**Prevention**
+
+- Keep `baseurl` aligned with the RP's actual hostname before creating or patching any OIDC client.
+- Or leave `oidcClientId` blank, set `runPrerequisiteSuite=true`, and let the prerequisite suite create a client
+  with the correct `$ESIGNET_REDIRECT_URI$` (`baseurl` + `userprofile`) on every run.
 
 ---
 

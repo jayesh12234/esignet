@@ -1,0 +1,32 @@
+# Local run of the same image GitHub builds as uitest-esignet.
+#
+#   mvn -Dgpg.skip=true -Dmaven.gitcommitid.skip=true package
+#   docker compose build
+#   docker compose up --abort-on-container-exit
+#
+# Reports land in ./test-output on the host.
+
+services:
+  uitest-esignet:
+    image: uitest-esignet:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SOURCE: local
+        COMMIT_HASH: local
+        COMMIT_ID: local
+        BUILD_TIME: local
+    shm_size: "2gb"
+    environment:
+      ENV_ENDPOINT: ${ENV_ENDPOINT:-https://api-internal.esqa.mosip.net}
+      ENV_USER: ${ENV_USER:-api-internal.esqa}
+      MODULES: ${MODULES:-esignet}
+      ENV_TESTLEVEL: ${ENV_TESTLEVEL:-smokeAndRegression}
+      CUCUMBER_FILTER_TAGS: ${CUCUMBER_FILTER_TAGS:-}
+      RUN_ONLY_SCENARIO: ${RUN_ONLY_SCENARIO:-}
+      JAVA_EXTRA_OPTS: ${JAVA_EXTRA_OPTS:--Xmx2g}
+    volumes:
+      - ./test-output:/home/mosip/test-output
+      - ./screenshots:/home/mosip/screenshots
+    restart: "no"

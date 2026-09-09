@@ -54,10 +54,6 @@ public class SignUpPage extends BasePage {
 	@FindBy(id = "form-submit-button")
 	WebElement setupContinueButton;
 
-	// This wrapper class is shared by both the success and the failure result screens - the
-	// heading text inside it ("Sign-Up Failed!" vs. the success message) is what actually
-	// distinguishes them, so isAccountCreatedSuccessfullyMessageDisplayed() must check that text
-	// rather than treating the mere presence of this element as success.
 	@FindBy(xpath = "//div[@class='text-center text-lg font-semibold']")
 	WebElement resultScreenHeading;
 
@@ -87,6 +83,7 @@ public class SignUpPage extends BasePage {
 	}
 
 	public void clickOnContinueButton() {
+		markOtpRequestStart();
 		clickOnElement(continueButton,"Clicked on continue button");
 	}
 
@@ -130,10 +127,7 @@ public class SignUpPage extends BasePage {
 		String headingText = resultScreenHeading.getText().trim();
 		String currentLang = System.getProperty("currentRunLanguage", "eng");
 		if (!"eng".equalsIgnoreCase(currentLang)) {
-			// SIGNUP_FAILED_HEADING has no verified localized text for other languages, and a success
-			// screen can also render a subtext, so that's not a reliable failure signal either - log a
-			// warning rather than guessing, since a real signup failure on this run may be misreported
-			// as success.
+
 			LOGGER.warn("SIGNUP_FAILED_HEADING has no verified localized text for '" + currentLang
 					+ "' - a signup failure on this run may be misreported as success.");
 		}

@@ -17,21 +17,17 @@ import org.openqa.selenium.support.ui.WebDriverWait;
 
 import base.BasePage;
 
-/** KBI (Knowledge-Based Identity) login form. */
 public class KbiPage extends BasePage {
 
 	public KbiPage(WebDriver driver) {
 		super(driver);
 	}
 
-	// A KBI field renders as an input/select/textarea keyed by the schema field id. Match on id,
-	// name, or data-field-id to stay resilient to how the frontend wires the attribute.
 	private By fieldInputLocator(String fieldId) {
 		return By.xpath("//*[self::input or self::select or self::textarea][@id='" + fieldId + "' or @name='" + fieldId
 				+ "' or @data-field-id='" + fieldId + "']");
 	}
 
-	/** Blocks until the KBI form has rendered by waiting for the first schema field to be visible. */
 	public void waitForKbiForm(List<String> fieldIds) {
 		if (fieldIds == null || fieldIds.isEmpty()) {
 			return;
@@ -43,7 +39,6 @@ public class KbiPage extends BasePage {
 		return !driver.findElements(fieldInputLocator(fieldId)).isEmpty();
 	}
 
-	/** Resolves the field's label element via three fallback strategies, or null if none found. */
 	private WebElement findLabel(String fieldId) {
 		List<By> labelLocators = List.of(
 				By.xpath("//label[@for='" + fieldId + "']"),
@@ -59,13 +54,11 @@ public class KbiPage extends BasePage {
 		return null;
 	}
 
-	/** Visible label for a field, or "" if none found. */
 	public String getFieldLabel(String fieldId) {
 		WebElement label = findLabel(fieldId);
 		return label != null ? textExcludingRequiredMarker(label) : "";
 	}
 
-	// Strips the nested "*" required-marker span so it doesn't get included in the label text.
 	private String textExcludingRequiredMarker(WebElement label) {
 		Object result = ((JavascriptExecutor) driver).executeScript(
 				"var el = arguments[0].cloneNode(true);"
@@ -76,9 +69,7 @@ public class KbiPage extends BasePage {
 	}
 
 	public void enterFieldValue(String fieldId, String value) {
-		// A date field renders as a readonly display input plus a hidden native type="date" input
-		// (class "real-date-input") whose calendar is the browser's own popup - unreachable from the
-		// DOM. Set the native input directly (it takes yyyy-MM-dd, our fixture format) instead.
+
 		WebElement dateInput = findRealDateInput(fieldId);
 		if (dateInput != null) {
 			setNativeInputValue(dateInput, value);
@@ -91,15 +82,22 @@ public class KbiPage extends BasePage {
 		}
 	}
 
-	// The native date input backing a date field, or null for ordinary text fields.
 	private WebElement findRealDateInput(String fieldId) {
-		List<WebElement> els = driver
-				.findElements(By.cssSelector("input.real-date-input[name='" + fieldId + "']"));
-		return els.isEmpty() ? null : els.get(0);
+		List<WebElement> els = driver.findElements(By.cssSelector("input.real-date-input[name='" + fieldId
+				+ "'], input.real-date-input[id='" + fieldId + "'], input.real-date-input[data-field-id='" + fieldId + "']"));
+		if (!els.isEmpty()) {
+			return els.get(0);
+		}
+
+		List<WebElement> visible = driver.findElements(fieldInputLocator(fieldId));
+		if (visible.isEmpty()) {
+			return null;
+		}
+		List<WebElement> nearby = visible.get(0)
+				.findElements(By.xpath("ancestor::*[self::div or self::label][1]//input[contains(@class,'real-date-input')]"));
+		return nearby.isEmpty() ? null : nearby.get(0);
 	}
 
-	// Sets an input's value through React's own value setter so its onChange fires (a plain
-	// element.value assignment doesn't). Empty string clears it. Also fires blur for touched-state.
 	private void setNativeInputValue(WebElement input, String value) {
 		((JavascriptExecutor) driver).executeScript(
 				"var input = arguments[0], value = arguments[1];"
@@ -111,17 +109,12 @@ public class KbiPage extends BasePage {
 				input, value);
 	}
 
-	// Tabs out of the field to trigger any on-blur validation.
 	public void blurField(String fieldId) {
 		driver.findElement(fieldInputLocator(fieldId)).sendKeys(Keys.TAB);
 	}
 
-	// clear() on a field that's already empty is a DOM no-op - nothing to remove, so no
-	// input/change event fires, and the form never marks the field "touched" for validation.
-	// Typing a throwaway character first makes the clear() that follows fire a real event.
 	public void touchThenClearField(String fieldId) {
-		// Date fields have no typeable text input - set the native input to a value then clear it,
-		// which leaves it touched-and-empty so its required error shows.
+
 		WebElement dateInput = findRealDateInput(fieldId);
 		if (dateInput != null) {
 			setNativeInputValue(dateInput, "1990-01-01");
@@ -133,20 +126,14 @@ public class KbiPage extends BasePage {
 		clearField(el);
 	}
 
-	/** Inline error text shown below a field (the ".error-message" div in its form-field container), or "". */
 	public String getFieldErrorMessage(String fieldId) {
-		// Scope to the field's form-field container rather than #id siblings - date fields nest the
-		// input inside a wrapper div, so the error div isn't a direct sibling of the input.
+
 		By errorLocator = By.xpath("//*[@id='" + fieldId
 				+ "']/ancestor::div[contains(@class,'form-field')][1]//div[contains(@class,'error-message')]");
 		List<WebElement> els = driver.findElements(errorLocator);
 		return els.isEmpty() ? "" : els.get(0).getText().trim();
 	}
 
-	// Classifies the control the schema field actually rendered as, into one of the UI-schema-supported
-	// input types: Text, Email, Number, Checkbox, Radio, Dropdown, Date. Returns "NotRendered" if no
-	// control exists, or "Unsupported:<detail>" for anything outside those types. A date field is the
-	// readonly display input plus a hidden native type="date" input (see enterFieldValue).
 	public String getRenderedInputType(String fieldId) {
 		String script = "var id = arguments[0];"
 				+ "if (document.querySelector('input.real-date-input[name=\"'+id+'\"]')"
@@ -173,9 +160,8 @@ public class KbiPage extends BasePage {
 		return result == null ? "NotRendered" : result.toString();
 	}
 
-	/** Visible option texts of a native-select dropdown field, excluding the placeholder, or empty. */
 	public List<String> getDropdownOptionTexts(String fieldId) {
-		// Excludes the "Select an Option" placeholder, which has its own non-empty text.
+
 		List<WebElement> options = driver.findElements(By.xpath("//select[@id='" + fieldId + "' or @name='" + fieldId
 				+ "' or @data-field-id='" + fieldId + "']//option[not(contains(@class,'select-placeholder'))][@value!='']"));
 		List<String> texts = new ArrayList<>();
@@ -188,7 +174,6 @@ public class KbiPage extends BasePage {
 		return texts;
 	}
 
-	/** Whether a field's label shows the visible required-marker (the "*" span). */
 	public boolean isFieldMarkedRequired(String fieldId) {
 		WebElement label = findLabel(fieldId);
 		if (label == null) {
@@ -198,15 +183,13 @@ public class KbiPage extends BasePage {
 		return !req.isEmpty() && req.get(0).isDisplayed();
 	}
 
-	// Network-condition control (offline simulation) is only available on a local Chromium driver -
-	// not on a remote/BrowserStack session.
 	public boolean isNetworkControlSupported() {
 		return driver instanceof ChromiumDriver;
 	}
 
 	public void setOffline(boolean offline) {
 		if (!offline) {
-			// Properly clears emulation state rather than applying an "online" emulation profile.
+
 			((ChromiumDriver) driver).deleteNetworkConditions();
 			return;
 		}
@@ -215,8 +198,6 @@ public class KbiPage extends BasePage {
 		((ChromiumDriver) driver).setNetworkConditions(conditions);
 	}
 
-	// The offline "Network Error!" screen auto-appears a few seconds after the connection drops; its
-	// Try Again button reloads the schema fresh.
 	public boolean isNetworkErrorShown(int timeoutSeconds) {
 		try {
 			new WebDriverWait(driver, Duration.ofSeconds(timeoutSeconds))
@@ -227,7 +208,6 @@ public class KbiPage extends BasePage {
 		}
 	}
 
-	/** The heading + message text shown on the offline "Network Error!" screen, or "". */
 	public String getNetworkErrorText() {
 		List<WebElement> paragraphs = driver.findElements(By.xpath("//button[@id='try_again']/preceding-sibling::p"));
 		List<String> texts = new ArrayList<>();
@@ -244,8 +224,71 @@ public class KbiPage extends BasePage {
 		clickOnElement(driver.findElement(By.id("try_again")), "Clicked Try Again on the network error screen");
 	}
 
-	// Matched on id, not text - the label is i18n-translated (Form.js: t1('login')).
+	private static final By LOGIN_BUTTON = By.cssSelector(
+			"#form-submit-button, #kbi_authenticate, #action_submit, button[type='submit']");
+
 	public void clickLoginButton() {
-		clickOnElement(driver.findElement(By.id("form-submit-button")), "Clicked KBI Login button");
+		clickOnElement(findLoginButton(), "Clicked KBI Login button");
+	}
+
+	public boolean isLoginButtonEnabled() {
+		return isButtonEnabled(findLoginButton(), "Verified KBI login button state");
+	}
+
+	public String getLoginButtonText() {
+		return findLoginButton().getText().trim();
+	}
+
+	private WebElement findLoginButton() {
+		List<WebElement> buttons = driver.findElements(LOGIN_BUTTON);
+		for (WebElement button : buttons) {
+			if (button.isDisplayed()) {
+				return button;
+			}
+		}
+		return driver.findElement(By.id("form-submit-button"));
+	}
+
+	public String getFieldValue(String fieldId) {
+		WebElement dateInput = findRealDateInput(fieldId);
+		WebElement el = dateInput != null ? dateInput : driver.findElement(fieldInputLocator(fieldId));
+		Object value = ((JavascriptExecutor) driver).executeScript("return arguments[0].value;", el);
+		return value != null ? value.toString() : "";
+	}
+
+	public List<String> getVisibleFieldIds() {
+		List<String> ids = new ArrayList<>();
+		List<WebElement> fields = driver.findElements(
+				By.cssSelector("form input:not([type='hidden']):not([type='checkbox']), form select, form textarea"));
+		if (fields.isEmpty()) {
+			fields = driver.findElements(By.cssSelector(
+					"input:not([type='hidden']):not([type='checkbox']):not([type='radio']), select, textarea"));
+		}
+		for (WebElement field : fields) {
+			if (!field.isDisplayed()) {
+				continue;
+			}
+			String id = field.getAttribute("id");
+			if (id == null || id.isBlank()) {
+				id = field.getAttribute("name");
+			}
+			if (id == null || id.isBlank()) {
+				id = field.getAttribute("data-field-id");
+			}
+			if (id != null && !id.isBlank() && !id.toLowerCase().contains("language")
+					&& !id.toLowerCase().contains("captcha")) {
+				ids.add(id);
+			}
+		}
+		return ids;
+	}
+
+	public boolean areFieldsEmpty(List<String> fieldIds) {
+		for (String fieldId : fieldIds) {
+			if (!getFieldValue(fieldId).isEmpty()) {
+				return false;
+			}
+		}
+		return true;
 	}
 }

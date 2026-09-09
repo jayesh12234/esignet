@@ -5,23 +5,18 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Timestamp;
 import java.util.Optional;
 
 import org.apache.log4j.Logger;
 import org.json.JSONObject;
 import org.testng.SkipException;
 
-import io.mosip.testrig.apirig.utils.ConfigManager;
-
-/**
- * Reads consent registry rows from {@code esignet.consent_detail} for UI test verification.
- * DB connectivity is resolved from Kernel properties ({@code db-server}, {@code postgres-password})
- * with optional overrides in config.properties.
- */
 public final class ConsentDbUtil {
 
 	private static final Logger logger = Logger.getLogger(ConsentDbUtil.class);
+	private static final String DEFAULT_DB_NAME = "mosip_esignet_go";
+	private static final String DEFAULT_SCHEMA = "esignet";
+	private static final String DEFAULT_PORT = "5432";
 
 	public static final String PRIMARY_CLIENT_ID_KEY = "$ID:CreateOIDCClient_all_Valid_Smoke_sid_clientId$";
 	public static final String SECONDARY_CLIENT_ID_KEY = "$ID:CreateOIDCClient_secondary_Smoke_sid_clientId$";
@@ -34,8 +29,10 @@ public final class ConsentDbUtil {
 
 	public static void requireDbConfigured() {
 		if (!isDbConfigured()) {
-			throw new SkipException(
-					"Consent DB verification skipped - configure db-server/postgres-password in Kernel.properties");
+			String reason = "Consent DB verification skipped - configure esignetDbHost and esignetDbPassword "
+					+ "in config.properties";
+			ExtentReportManager.logStep("⚠️ " + reason);
+			throw new SkipException(reason);
 		}
 	}
 
@@ -85,53 +82,32 @@ public final class ConsentDbUtil {
 		logger.info("Verified consent_detail row for clientId=" + clientId + " with psu_token present and claims JSON");
 	}
 
-	public static void assertAcceptedClaimsEmpty(String clientIdKey) {
-		String clientId = EsignetUtil.resolveClientId(clientIdKey);
-		ConsentRecord record = findLatestByClientId(clientId)
-				.orElseThrow(() -> new AssertionError("No consent_detail row found for clientId=" + clientId));
-
-		String acceptedClaims = record.acceptedClaims();
-		if (acceptedClaims == null || acceptedClaims.isBlank() || "{}".equals(acceptedClaims.trim())
-				|| "[]".equals(acceptedClaims.trim())) {
-			logger.info("Verified empty accepted_claims for clientId=" + clientId);
-			return;
-		}
-		throw new AssertionError(
-				"Expected empty accepted_claims for clientId=" + clientId + " but found: " + acceptedClaims);
-	}
-
 	private static String resolveDbUrl() {
-		String override = EsignetConfigManager.getproperty("esignetDbUrl");
-		if (override != null && !override.isBlank()) {
-			return override.trim();
+		String override = firstConfigured("esignetDbUrl");
+		if (override != null) {
+			return withJdbcDefaults(override);
 		}
-		String server = ConfigManager.getDbServer();
-		if (server == null || server.isBlank()) {
+		String server = firstConfigured("esignetDbHost");
+		if (server == null) {
 			return null;
 		}
-		String port = ConfigManager.getDbPort();
-		if (port == null || port.isBlank()) {
-			port = "5432";
+		String port = firstConfigured("esignetDbPort");
+		if (port == null) {
+			port = DEFAULT_PORT;
 		}
-		return "jdbc:postgresql://" + server.trim() + ":" + port.trim() + "/mosip_esignet";
+		String dbName = firstConfigured("esignetDbName");
+		if (dbName == null) {
+			dbName = DEFAULT_DB_NAME;
+		}
+		return withJdbcDefaults("jdbc:postgresql://" + server + ":" + port + "/" + dbName);
 	}
 
 	private static String resolveDbUsername() {
-		String override = EsignetConfigManager.getproperty("esignetDbUsername");
-		if (override != null && !override.isBlank()) {
-			return override.trim();
-		}
-		String user = ConfigManager.getproperty("db-su-user");
-		return (user != null && !user.isBlank()) ? user.trim() : "postgres";
+		return firstConfigured("esignetDbUsername");
 	}
 
 	private static String resolveDbPassword() {
-		String override = EsignetConfigManager.getproperty("esignetDbPassword");
-		if (override != null && !override.isBlank()) {
-			return override.trim();
-		}
-		String password = ConfigManager.getproperty("postgres-password");
-		return password != null ? password.trim() : "";
+		return firstConfigured("esignetDbPassword");
 	}
 
 	private static Connection openConnection() throws SQLException {
@@ -139,7 +115,38 @@ public final class ConsentDbUtil {
 	}
 
 	private static String getSchema() {
-		String schema = EsignetConfigManager.getproperty("esignetDbSchema");
-		return (schema == null || schema.isBlank()) ? "esignet" : schema.trim();
+		String schema = firstConfigured("esignetDbSchema");
+		return schema != null ? schema : DEFAULT_SCHEMA;
+	}
+
+	private static String withJdbcDefaults(String url) {
+		String jdbcUrl = url.trim();
+		// Default disable matches internal esqa/postgres ClusterIP access without a client CA.
+		// Override with esignetDbSslMode=verify-full (and trust store) when the DB requires TLS.
+		String sslMode = firstConfigured("esignetDbSslMode");
+		if (sslMode == null) {
+			sslMode = "disable";
+		}
+		if (!jdbcUrl.contains("sslmode=")) {
+			jdbcUrl += jdbcUrl.contains("?") ? "&sslmode=" + sslMode : "?sslmode=" + sslMode;
+		}
+		if (!jdbcUrl.toLowerCase().contains("currentschema=")) {
+			jdbcUrl += "&currentSchema=" + getSchema();
+		}
+		return jdbcUrl;
+	}
+
+	private static String firstConfigured(String... keys) {
+		for (String key : keys) {
+			String value = blankToNull(EsignetConfigManager.getproperty(key));
+			if (value != null) {
+				return value;
+			}
+		}
+		return null;
+	}
+
+	private static String blankToNull(String value) {
+		return (value == null || value.isBlank()) ? null : value.trim();
 	}
 }

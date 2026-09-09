@@ -45,8 +45,6 @@ public class SignupFormDynamicFiller {
 				continue;
 			}
 
-			// id/data-field-id may be on the input/select/textarea itself, or on a wrapper
-			// element around it - match either shape rather than assuming one or the other.
 			List<WebElement> matchingElements = driver.findElements(By.xpath(
 					"//*[self::input or self::select or self::textarea][@id='" + fieldId + "' or @data-field-id='"
 							+ fieldId + "']"
@@ -133,10 +131,7 @@ public class SignupFormDynamicFiller {
 				Select dropdown = new Select(element);
 				List<WebElement> options = dropdown.getOptions();
 				if (options.size() > 1) {
-					// A language/locale dropdown (e.g. preferredLang) must not be picked at random:
-					// this deployment supports eng+khm but has no SMS/notification template for khm
-					// (IDA-MLC-007 on the next OTP send), so pin it to English the same way
-					// mockIdentityValueMapping.properties already does for the mock identity path.
+
 					if (fieldId.toLowerCase().contains("lang") && selectEnglishOption(dropdown, options)) {
 						continue;
 					}
